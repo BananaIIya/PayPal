@@ -338,6 +338,7 @@ export function ClaimView({ initial }: { initial: ClaimViewData }) {
               claim={data.claim}
               order={data.order}
               allowed={data.allowedActions}
+              followUps={data.followUps}
               actions={data.actions}
               paypal={data.paypal}
               onDone={refresh}

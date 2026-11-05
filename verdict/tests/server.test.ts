@@ -238,7 +238,7 @@ describe('资金动作路径（结构性检查）', () => {
     });
   }
   const src = path.resolve(__dirname, '../src');
-  const WRITE_CALL = /\.(sendMessage|provideEvidence|makeOffer|acceptClaim|escalate|refundCapture)\(/;
+  const WRITE_CALL = /\.(sendMessage|provideEvidence|provideSupportingInfo|acknowledgeReturnItem|appealDispute|makeOffer|acceptClaim|escalate|refundCapture)\(/;
 
   it('PayPal 写接口只在动作执行器和模拟器内部被调用', () => {
     const callers = walk(src)
@@ -320,5 +320,33 @@ describe('图片复用与行为统计的误报保护', () => {
     const claimId = ingest.createClaim({ merchantId: order.merchant_id, orderId, origin: 'portal', type: 'damaged', status: 'analyzing' });
     await pipeline.runAnalysis(claimId, { latencyMs: 0 });
     expect(repo.claimSignals(claimId).map((s) => s.code)).not.toContain('HIGH_CLAIM_FREQUENCY');
+  });
+});
+
+describe('核验报告 PDF', () => {
+  it('每个演示场景都能生成商家版和提交版', async () => {
+    const reportPdf = await import('@/server/report-pdf');
+    if (!reportPdf.findReportFont()) return;
+    for (const item of repo.listClaims().filter((c) => c.level)) {
+      for (const audience of ['merchant', 'paypal'] as const) {
+        const out = await reportPdf.renderReportPdf(item.id, audience);
+        expect(out!.data.subarray(0, 5).toString(), `${item.scenarioTitle} ${audience}`).toBe('%PDF-');
+      }
+    }
+  }, 60000);
+
+  it('提交版不含 Behavior 发现', async () => {
+    const reportPdf = await import('@/server/report-pdf');
+    const base = repo.listClaims().map((c) => repo.claimDetail(c.id)!).find((d) => d.verdict?.report.findings.length)!.verdict!.report;
+    const behavior = { ...base.findings[0], analyzer: 'behavior' as const, code: 'HIGH_CLAIM_FREQUENCY', signalIds: ['b1'] };
+    const report = { ...base, findings: [...base.findings, behavior] };
+    expect(reportPdf.visibleFindings(report, 'merchant')).toContain(behavior);
+    expect(reportPdf.visibleFindings(report, 'paypal').some((f) => f.analyzer === 'behavior')).toBe(false);
+    expect(reportPdf.visibleFindings(report, 'paypal')).toHaveLength(base.findings.filter((f) => f.analyzer !== 'behavior').length);
+  });
+
+  it('没有判定的索赔返回 null', async () => {
+    const reportPdf = await import('@/server/report-pdf');
+    expect(await reportPdf.renderReportPdf('no-such-claim', 'merchant')).toBeNull();
   });
 });

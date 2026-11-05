@@ -65,7 +65,23 @@ export interface AnalyzerRun {
 }
 
 export type VerdictLevel = 'low' | 'medium' | 'high' | 'insufficient';
-export type ActionType = 'refund' | 'accept_claim' | 'send_message' | 'provide_evidence' | 'make_offer' | 'escalate';
+export type ActionType =
+  | 'refund'
+  | 'accept_claim'
+  | 'send_message'
+  | 'provide_evidence'
+  | 'make_offer'
+  | 'escalate'
+  /** UNDER_REVIEW 时向 PayPal 追加说明。 */
+  | 'provide_supporting_info'
+  /** 退货纠纷中确认收到（或没收到）买家退回的包裹。 */
+  | 'acknowledge_return_item'
+  /** PayPal 判买家胜诉后申诉。 */
+  | 'appeal';
+
+/** acknowledge-return-item 的 acknowledgement_type。 */
+export const RETURN_ACK_TYPES = ['ITEM_RECEIVED', 'ITEM_NOT_RECEIVED', 'DAMAGED', 'EMPTY_PACKAGE_OR_DIFFERENT', 'MISSING_ITEMS'] as const;
+export type ReturnAckType = (typeof RETURN_ACK_TYPES)[number];
 
 export interface CategoryPolicy {
   category: string;
@@ -160,6 +176,9 @@ export interface SuggestedAction {
   trackingNumber?: string;
   carrier?: string;
   attachEvidence?: boolean;
+  /** 附核验报告 PDF（provide_evidence、appeal）。 */
+  attachReport?: boolean;
+  acknowledgementType?: ReturnAckType;
 }
 
 export interface VerdictReport {

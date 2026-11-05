@@ -906,7 +906,7 @@ describe('证据附件', () => {
     addSignal(c.claimId, [cited, webp, foreign]);
     addSignal(c.claimId, [notCited], 'supports_claim');
 
-    const docs = await attachments.buildEvidenceDocuments(c.claimId);
+    const { documents: docs } = await attachments.buildEvidenceDocuments(c.claimId);
     expect(docs.map((d) => d.name)).toEqual(['evidence-1.jpg', 'evidence-2.jpg']);
     expect(docs.map((d) => d.mime)).toEqual(['image/jpeg', 'image/jpeg']);
     expect(await sharp(docs[1].data).metadata().then((m) => m.format)).toBe('jpeg');
@@ -1021,5 +1021,141 @@ describe('跨站请求', () => {
     expect(origin.isCrossSite(req({ host: 'localhost:3000', origin: 'https://evil.example' }))).toBe(true);
     expect(origin.isCrossSite(req({ host: 'localhost:3000', 'sec-fetch-site': 'cross-site' }))).toBe(true);
     expect(origin.isCrossSite(req({ host: 'localhost:3000', origin: 'null' }))).toBe(true);
+  });
+});
+
+describe('后续争议操作：补充说明、确认退货、申诉', () => {
+  const linksFor = (id: string, segments: string[]) =>
+    segments.map((s) => ({ href: `https://api-m.sandbox.paypal.com/v1/customer/disputes/${id}/${s}`, rel: s, method: 'POST' }));
+
+  it('三个操作只在 PayPal 给了链接时才允许', () => {
+    const allowed = (links: unknown[]) => sandbox.toDisputeView(rawDispute('D1', { links, allowed_response_options: {} })).allowedActions;
+    expect(allowed(linksFor('D1', ['provide-supporting-info', 'acknowledge-return-item', 'appeal']))).toEqual([
+      'provide_supporting_info',
+      'acknowledge_return_item',
+      'appeal',
+    ]);
+    expect(allowed([])).toEqual([]);
+  });
+
+  it('provide-supporting-info 是 multipart，input 只有 notes', async () => {
+    const documents = [{ name: 'evidence-1.jpg', mime: 'image/jpeg', data: Buffer.from('one') }];
+    await client().provideSupportingInfo('D1', { notes: '补充', documents }, 'k1');
+    const call = fake.writes(/provide-supporting-info$/)[0];
+    const form = call.raw as FormData;
+    expect(JSON.parse(await (form.get('input') as Blob).text())).toEqual({ notes: '补充' });
+    expect((form.get('file1') as File).name).toBe('evidence-1.jpg');
+    expect(call.headers.get('paypal-request-id')).toBe('k1');
+  });
+
+  it('acknowledge-return-item 是 JSON，带 acknowledgement_type', async () => {
+    await client().acknowledgeReturnItem('D1', { note: '收到空箱', acknowledgementType: 'EMPTY_PACKAGE_OR_DIFFERENT' }, 'k2');
+    expect(fake.writes(/acknowledge-return-item$/)[0].json).toEqual({ note: '收到空箱', acknowledgement_type: 'EMPTY_PACKAGE_OR_DIFFERENT' });
+  });
+
+  it('appeal 的请求体与 provide-evidence 相同', async () => {
+    await client().appealDispute('D1', { evidenceType: 'PROOF_OF_FULFILLMENT', notes: '申诉', documents: [], trackingNumber: '1Z', carrier: 'UPS' }, 'k3');
+    const form = fake.writes(/appeal$/)[0].raw as FormData;
+    expect(JSON.parse(await (form.get('input') as Blob).text())).toEqual({
+      evidences: [
+        { evidence_type: 'PROOF_OF_FULFILLMENT', notes: '申诉', evidence_info: { tracking_info: [{ carrier_name: 'UPS', tracking_number: '1Z' }] } },
+      ],
+    });
+  });
+
+  it('退货验收结果必须是 PayPal 认识的值', async () => {
+    const c = await sandboxClaim({ links: linksFor('x', ['acknowledge-return-item']).map((l) => ({ ...l, href: l.href.replace('/x/', '/any/') })) });
+    const bad = await actions.executeAction(actionReq(c, { type: 'acknowledge_return_item', payload: { acknowledgementType: 'WHATEVER' as never } }));
+    expect(bad.status).toBe(400);
+    expect(sellerWrites()).toHaveLength(0);
+    const ok = await actions.executeAction(actionReq(c, { type: 'acknowledge_return_item', payload: { acknowledgementType: 'MISSING_ITEMS' } }));
+    expect(ok.status).toBe(200);
+    expect(fake.writes(/acknowledge-return-item$/)[0].json).toEqual({ note: '商家已处理买家退回的包裹。', acknowledgement_type: 'MISSING_ITEMS' });
+  });
+
+  it('补充说明不能为空，并且只在 UNDER_REVIEW 给了链接时可用', async () => {
+    const c = await sandboxClaim();
+    expect((await actions.executeAction(actionReq(c, { type: 'provide_supporting_info', payload: { notes: 'x' } }))).status).toBe(409);
+    fake.disputes.set(c.disputeId, rawDispute(c.disputeId, { status: 'UNDER_REVIEW', links: linksFor(c.disputeId, ['provide-supporting-info']) }));
+    expect((await actions.executeAction(actionReq(c, { type: 'provide_supporting_info', payload: { notes: ' ' } }))).status).toBe(400);
+    const ok = await actions.executeAction(actionReq(c, { type: 'provide_supporting_info', payload: { notes: '补充事实' } }));
+    expect(ok.status).toBe(200);
+    expect(fake.writes(/provide-supporting-info$/)).toHaveLength(1);
+  });
+
+  it('已结案的索赔只开放申诉；申诉后索赔重新进入处理中', async () => {
+    const c = await sandboxClaim();
+    fake.disputes.set(
+      c.disputeId,
+      rawDispute(c.disputeId, {
+        status: 'RESOLVED',
+        dispute_outcome: { outcome_code: 'RESOLVED_BUYER_FAVOUR' },
+        links: linksFor(c.disputeId, ['appeal', 'send-message']),
+      }),
+    );
+    sync.upsertClaimFromDispute((await client().getDispute(c.disputeId, { fresh: true }))!);
+    expect(repo.getClaim(c.claimId)!.status).toBe('closed');
+
+    const view = await views.claimView(c.claimId);
+    expect(view!.allowedActions).toEqual(['appeal']);
+    expect(view!.followUps.map((f) => f.type)).toEqual(['appeal']);
+
+    expect((await actions.executeAction(actionReq(c, { type: 'send_message' }))).status).toBe(409);
+    const res = await actions.executeAction(actionReq(c, { type: 'appeal', payload: { evidenceType: 'OTHER', notes: '有新的物流证据' } }));
+    expect(res.status).toBe(200);
+    expect(fake.writes(/appeal$/)).toHaveLength(1);
+    expect(repo.getClaim(c.claimId)!.status).toBe('action_sent');
+  });
+
+  it('模拟器：提交证据后进入 UNDER_REVIEW，可以补充说明', async () => {
+    const demo = repo
+      .listClaims()
+      .find((c) => c.paypalEnv === 'simulator' && c.status === 'awaiting_decision' && repo.claimDetail(c.id)!.claim.disputeId)!;
+    const verdictId = repo.latestVerdict(demo.id)!.id;
+    const first = await actions.executeAction(actionReq({ claimId: demo.id, verdictId }, { type: 'provide_evidence', payload: { evidenceType: 'OTHER', notes: '说明' } }));
+    expect(first.status).toBe(200);
+    const view = await views.claimView(demo.id);
+    expect(view!.allowedActions).toContain('provide_supporting_info');
+    expect(view!.followUps.map((f) => f.type)).toEqual(['provide_supporting_info']);
+    const res = await actions.executeAction(actionReq({ claimId: demo.id, verdictId }, { type: 'provide_supporting_info', payload: { notes: '补充' } }));
+    expect(res.status).toBe(200);
+    expect(res.body.response).toMatchObject({ simulated: true });
+    expect(fake.calls).toHaveLength(0);
+  });
+});
+
+describe('核验报告 PDF', () => {
+  it('提交证据时附报告 PDF，放在第一个文件', async () => {
+    const reportPdf = await import('@/server/report-pdf');
+    if (!reportPdf.findReportFont()) return; // 没有中文字体的机器上跳过，下面单独测降级。
+    const c = await sandboxClaim();
+    const res = await actions.executeAction(
+      actionReq(c, { type: 'provide_evidence', payload: { notes: '说明', evidenceType: 'OTHER', attachEvidence: false, attachReport: true } }),
+    );
+    expect(res.status).toBe(200);
+    const form = fake.writes(/provide-evidence$/)[0].raw as FormData;
+    const file1 = form.get('file1') as File;
+    expect(file1.name).toBe('verdict-report.pdf');
+    expect(file1.type).toBe('application/pdf');
+    expect(Buffer.from(await file1.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
+    const input = JSON.parse(await (form.get('input') as Blob).text());
+    expect(input.evidences[0].documents).toEqual([{ name: 'verdict-report.pdf' }]);
+    expect(res.body.response).toMatchObject({ documents: ['verdict-report.pdf'] });
+  });
+
+  it('找不到字体时照常提交，只在结果里注明没附上报告', async () => {
+    process.env.VERDICT_REPORT_FONT = path.join(dir, 'no-such-font.ttf');
+    try {
+      const c = await sandboxClaim();
+      const res = await actions.executeAction(
+        actionReq(c, { type: 'provide_evidence', payload: { notes: '说明', evidenceType: 'OTHER', attachEvidence: false, attachReport: true } }),
+      );
+      expect(res.status).toBe(200);
+      expect(String((res.body.response as Record<string, unknown>).reportSkipped)).toContain('字体');
+      expect((fake.writes(/provide-evidence$/)[0].raw as FormData).get('file1')).toBeNull();
+      expect((await views.claimView(c.claimId))!.paypal.reportAvailable).toBe(false);
+    } finally {
+      delete process.env.VERDICT_REPORT_FONT;
+    }
   });
 });

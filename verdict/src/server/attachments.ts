@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import type { PayPalDocument } from '@/paypal/client';
 import type { EvidenceRow } from '@/analyzers';
 import { claimEvidence, claimSignals } from './repo';
+import { renderReportPdf, ReportFontUnavailableError } from './report-pdf';
 import { readFile } from './storage';
 
 // PayPal 的限制：JPG、GIF、PNG、PDF；单个小于 10MB；每次合计不超过 50MB。
@@ -44,15 +45,41 @@ async function toPayPalFile(row: EvidenceRow, index: number): Promise<PayPalDocu
   }
 }
 
-export async function buildEvidenceDocuments(claimId: string): Promise<PayPalDocument[]> {
+export interface AttachmentBundle {
+  documents: PayPalDocument[];
+  /** 要求附报告但没附上时的原因，记进动作结果，商家能看到。 */
+  reportSkipped: string | null;
+}
+
+/**
+ * 组装附件。报告 PDF 放在第一个，之后是关键证据图片；超过 PayPal 限制的文件跳过。
+ * 报告生成失败（例如服务器没有中文字体）不阻止提交，只在结果里注明，商家可以下载报告手动上传。
+ */
+export async function buildEvidenceDocuments(claimId: string, opts: { evidence?: boolean; report?: boolean } = { evidence: true }): Promise<AttachmentBundle> {
   const documents: PayPalDocument[] = [];
   let total = 0;
-  const rows = selectAttachmentEvidence(claimId);
-  for (const [index, row] of rows.entries()) {
-    const file = await toPayPalFile(row, index);
-    if (!file || total + file.data.length > MAX_TOTAL_BYTES) continue;
-    total += file.data.length;
-    documents.push(file);
+  let reportSkipped: string | null = null;
+  if (opts.report) {
+    try {
+      const report = await renderReportPdf(claimId, 'paypal');
+      if (!report) reportSkipped = '这笔索赔还没有判定，无法生成报告';
+      else if (report.data.length >= MAX_FILE_BYTES) reportSkipped = '报告超过 PayPal 的单个文件大小限制';
+      else {
+        documents.push({ name: report.fileName, mime: 'application/pdf', data: report.data });
+        total += report.data.length;
+      }
+    } catch (e) {
+      reportSkipped = e instanceof ReportFontUnavailableError ? e.message : `报告生成失败：${e instanceof Error ? e.message : String(e)}`;
+    }
   }
-  return documents;
+  if (opts.evidence) {
+    const rows = selectAttachmentEvidence(claimId).slice(0, MAX_FILES - documents.length);
+    for (const [index, row] of rows.entries()) {
+      const file = await toPayPalFile(row, index);
+      if (!file || total + file.data.length > MAX_TOTAL_BYTES) continue;
+      total += file.data.length;
+      documents.push(file);
+    }
+  }
+  return { documents, reportSkipped };
 }

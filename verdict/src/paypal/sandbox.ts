@@ -1,7 +1,7 @@
 // 真实的 PayPal 沙箱客户端。请求格式对照官方 Disputes、Payments、Orders、Webhooks 文档。
 // 接口地址写死，不提供环境变量覆盖：这个版本不可能连到正式环境，也就不可能动用真实资金。
-import type { ActionType } from '@/core/types';
-import { PayPalApiError, type DisputeView, type PayPalClient, type PayPalDocument, type PayPalWriteResult } from './client';
+import type { ActionType, ReturnAckType } from '@/core/types';
+import { PayPalApiError, type DisputeView, type EvidenceInput, type PayPalClient, type PayPalDocument, type PayPalWriteResult } from './client';
 import { paypalConfig } from './config';
 
 export const SANDBOX_API_BASE = 'https://api-m.sandbox.paypal.com';
@@ -74,6 +74,9 @@ function allowedFrom(raw: RawDispute): ActionType[] {
   if (hasLink(links, 'make-offer') || options.make_offer) allowed.push('make_offer');
   if (hasLink(links, 'accept-claim') || options.accept_claim) allowed.push('accept_claim');
   if (hasLink(links, 'escalate')) allowed.push('escalate');
+  if (hasLink(links, 'provide-supporting-info')) allowed.push('provide_supporting_info');
+  if (hasLink(links, 'acknowledge-return-item')) allowed.push('acknowledge_return_item');
+  if (hasLink(links, 'appeal')) allowed.push('appeal');
   return allowed;
 }
 
@@ -338,25 +341,44 @@ export class PayPalSandbox implements PayPalClient {
     return this.written(op, requestId);
   }
 
-  async provideEvidence(
-    disputeId: string,
-    input: { evidenceType: string; notes: string; documents: PayPalDocument[]; trackingNumber?: string; carrier?: string },
-    requestId: string,
-  ) {
+  async provideEvidence(disputeId: string, input: EvidenceInput, requestId: string) {
+    return this.postEvidences(disputeId, 'provide-evidence', input, requestId);
+  }
+
+  /** appeal 和 provide-evidence 的请求体相同：input 部分是 evidences 数组，文件依次为 file1、file2。 */
+  private async postEvidences(disputeId: string, segment: 'provide-evidence' | 'appeal', input: EvidenceInput, requestId: string) {
     const evidence: Record<string, unknown> = { evidence_type: input.evidenceType, notes: input.notes };
     if (input.documents.length) evidence.documents = input.documents.map((d) => ({ name: d.name }));
     if (input.trackingNumber) {
       evidence.evidence_info = { tracking_info: [{ ...carrierFields(input.carrier), tracking_number: input.trackingNumber }] };
     }
-    const form = new FormData();
-    form.append('input', new Blob([JSON.stringify({ evidences: [evidence] })], { type: 'application/json' }));
-    input.documents.forEach((d, i) => {
-      form.append(`file${i + 1}`, new Blob([new Uint8Array(d.data)], { type: d.mime }), d.name);
-    });
-    const op = `POST /v1/customer/disputes/${disputeId}/provide-evidence`;
-    await this.request('POST', `/v1/customer/disputes/${encodeURIComponent(disputeId)}/provide-evidence`, { form, requestId });
+    const form = multipart({ evidences: [evidence] }, input.documents);
+    const op = `POST /v1/customer/disputes/${disputeId}/${segment}`;
+    await this.request('POST', `/v1/customer/disputes/${encodeURIComponent(disputeId)}/${segment}`, { form, requestId });
     this.disputeCache.delete(disputeId);
     return this.written(op, requestId, { documents: input.documents.map((d) => d.name) });
+  }
+
+  async provideSupportingInfo(disputeId: string, input: { notes: string; documents: PayPalDocument[] }, requestId: string) {
+    const form = multipart({ notes: input.notes }, input.documents);
+    const op = `POST /v1/customer/disputes/${disputeId}/provide-supporting-info`;
+    await this.request('POST', `/v1/customer/disputes/${encodeURIComponent(disputeId)}/provide-supporting-info`, { form, requestId });
+    this.disputeCache.delete(disputeId);
+    return this.written(op, requestId, { documents: input.documents.map((d) => d.name) });
+  }
+
+  async acknowledgeReturnItem(disputeId: string, input: { note: string; acknowledgementType: ReturnAckType }, requestId: string) {
+    const op = `POST /v1/customer/disputes/${disputeId}/acknowledge-return-item`;
+    await this.request('POST', `/v1/customer/disputes/${encodeURIComponent(disputeId)}/acknowledge-return-item`, {
+      json: { note: input.note, acknowledgement_type: input.acknowledgementType },
+      requestId,
+    });
+    this.disputeCache.delete(disputeId);
+    return this.written(op, requestId, { acknowledgement_type: input.acknowledgementType });
+  }
+
+  async appealDispute(disputeId: string, input: EvidenceInput, requestId: string) {
+    return this.postEvidences(disputeId, 'appeal', input, requestId);
   }
 
   async makeOffer(disputeId: string, input: { amount: number; currency: string; note: string }, requestId: string) {
@@ -528,6 +550,15 @@ export class PayPalSandbox implements PayPalClient {
     });
     return body.verification_status === 'SUCCESS';
   }
+}
+
+function multipart(input: unknown, documents: PayPalDocument[]): FormData {
+  const form = new FormData();
+  form.append('input', new Blob([JSON.stringify(input)], { type: 'application/json' }));
+  documents.forEach((d, i) => {
+    form.append(`file${i + 1}`, new Blob([new Uint8Array(d.data)], { type: d.mime }), d.name);
+  });
+  return form;
 }
 
 const KNOWN_CARRIERS: Record<string, string> = { UPS: 'UPS', USPS: 'USPS', FEDEX: 'FEDEX', DHL: 'DHL' };

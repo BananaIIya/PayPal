@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
-import type { ActionType, SuggestedAction, VerdictReport } from '@/core/types';
+import { RETURN_ACK_TYPES, type ActionType, type ReturnAckType, type SuggestedAction, type VerdictReport } from '@/core/types';
 import type { ClaimViewData } from '@/server/views';
 import { fmtDateTime, fmtMoney } from './format';
 
@@ -13,7 +13,22 @@ const TYPE_LABEL: Record<string, string> = {
   provide_evidence: '提交证据',
   make_offer: '提出和解',
   escalate: '升级争议',
+  provide_supporting_info: '补充说明',
+  acknowledge_return_item: '确认退货',
+  appeal: '申诉',
 };
+
+const ACK_LABEL: Record<ReturnAckType, string> = {
+  ITEM_RECEIVED: '已收到退货，状态正常',
+  ITEM_NOT_RECEIVED: '没有收到退货',
+  DAMAGED: '收到退货，但商品损坏',
+  EMPTY_PACKAGE_OR_DIFFERENT: '空包裹或不是原商品',
+  MISSING_ITEMS: '收到退货，但少件',
+};
+
+/** 带证据附件的动作，以及其中可以附报告的动作。 */
+const ATTACH_TYPES = new Set<string>(['provide_evidence', 'appeal', 'provide_supporting_info']);
+const REPORT_TYPES = new Set<string>(['provide_evidence', 'appeal']);
 
 const MONEY_ACTIONS = new Set(['refund', 'accept_claim', 'make_offer']);
 
@@ -24,6 +39,7 @@ interface Props {
   claim: ClaimViewData['claim'];
   order: ClaimViewData['order'];
   allowed: ActionType[];
+  followUps: SuggestedAction[];
   actions: ClaimViewData['actions'];
   paypal: ClaimViewData['paypal'];
   onDone: () => Promise<void>;
@@ -32,43 +48,54 @@ interface Props {
 const STUCK_PENDING_MS = 2 * 60 * 1000;
 const STATUS_TEXT: Record<string, string> = { succeeded: '成功', failed: '失败', unknown: '结果不明', pending: '执行中' };
 
-export function ActionPanel({ claimId, verdictId, report, claim, order, allowed, actions, paypal, onDone }: Props) {
-  const options = useMemo(() => [report.primaryAction, ...report.alternatives], [report]);
+export function ActionPanel({ claimId, verdictId, report, claim, order, allowed, followUps, actions, paypal, onDone }: Props) {
+  const closed = claim.status === 'closed';
+  // 已结案时只剩 PayPal 仍然开放的后续操作（申诉）。
+  const options = useMemo(
+    () => (closed ? followUps : [report.primaryAction, ...report.alternatives, ...followUps]),
+    [closed, report, followUps],
+  );
   const [index, setIndex] = useState(0);
-  const current = options[index] ?? options[0];
+  const current: SuggestedAction | undefined = options[index] ?? options[0];
 
   const [message, setMessage] = useState('');
   const [notes, setNotes] = useState('');
   const [amount, setAmount] = useState('');
   const [attachEvidence, setAttachEvidence] = useState(true);
+  const [attachReport, setAttachReport] = useState(true);
+  const [ackType, setAckType] = useState<ReturnAckType>('ITEM_RECEIVED');
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idempotencyKey = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!current) return;
     setMessage(current.message ?? '');
     setNotes(current.notes ?? '');
     const initial = current.offerAmount ?? current.refundAmount;
     setAmount(initial !== undefined ? String(initial) : '');
     setAttachEvidence(current.attachEvidence ?? true);
+    setAttachReport(current.attachReport ?? false);
+    setAckType(current.acknowledgementType ?? 'ITEM_RECEIVED');
     setError(null);
   }, [current]);
 
-  const isAllowed = current.type !== 'none' && allowed.includes(current.type);
-  const closed = claim.status === 'closed';
+  const isAllowed = !!current && current.type !== 'none' && allowed.includes(current.type);
   const unresolved = actions.find(
     (a) => a.status === 'unknown' || (a.status === 'pending' && Date.now() - new Date(a.confirmedAt).getTime() > STUCK_PENDING_MS),
   );
 
-  const payload = () => ({
+  const payload = (current: SuggestedAction) => ({
     message: current.type === 'send_message' || current.type === 'refund' ? message : undefined,
     notes: current.type !== 'send_message' ? notes : undefined,
     evidenceType: current.evidenceType,
     amount: current.type === 'refund' || current.type === 'make_offer' ? Number(amount) : undefined,
     trackingNumber: current.trackingNumber,
     carrier: current.carrier,
-    attachEvidence: current.type === 'provide_evidence' ? attachEvidence : undefined,
+    attachEvidence: ATTACH_TYPES.has(current.type) ? attachEvidence : undefined,
+    attachReport: REPORT_TYPES.has(current.type) ? attachReport && paypal.reportAvailable : undefined,
+    acknowledgementType: current.type === 'acknowledge_return_item' ? ackType : undefined,
   });
 
   function openConfirm() {
@@ -79,6 +106,7 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
   }
 
   async function execute() {
+    if (!current) return;
     setBusy(true);
     setError(null);
     let res: Response;
@@ -86,7 +114,7 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
       res = await fetch(`/api/claims/${claimId}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey.current! },
-        body: JSON.stringify({ type: current.type, verdictId, confirm: true, payload: payload() }),
+        body: JSON.stringify({ type: current.type, verdictId, confirm: true, payload: payload(current) }),
       });
     } catch {
       // 不知道服务端有没有收到，所以保留幂等键。重试时服务端会返回上一次的结果，不会再执行一次。
@@ -131,9 +159,9 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
   }
 
   const moneyAmount =
-    current.type === 'accept_claim'
+    current?.type === 'accept_claim'
       ? (paypal.amount ?? order.amount)
-      : current.type === 'refund' || current.type === 'make_offer'
+      : current?.type === 'refund' || current?.type === 'make_offer'
         ? Number(amount)
         : null;
 
@@ -162,7 +190,7 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
           {!confirming && error && <div style={{ marginTop: 8 }}>{error}</div>}
         </div>
       )}
-      {options.length > 1 && !closed && (
+      {options.length > 1 && (
         <div className="action-tabs" role="group" aria-label="选择动作">
           {options.map((o, i) => (
             <button key={`${o.type}-${o.label}`} className="action-tab" aria-pressed={i === index} onClick={() => setIndex(i)}>
@@ -171,7 +199,7 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
           ))}
         </div>
       )}
-      {closed ? (
+      {!current ? (
         <p className="muted">这笔索赔已结案。</p>
       ) : (
         <>
@@ -186,6 +214,11 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
             setAmount={setAmount}
             attachEvidence={attachEvidence}
             setAttachEvidence={setAttachEvidence}
+            attachReport={attachReport}
+            setAttachReport={setAttachReport}
+            reportAvailable={paypal.reportAvailable}
+            ackType={ackType}
+            setAckType={setAckType}
             attachmentCount={paypal.attachments}
             currency={order.currency}
             maxAmount={order.amount}
@@ -222,13 +255,17 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
               </div>
               {typeof a.response?.operation === 'string' && <div className="muted mono">{a.response.operation}</div>}
               {typeof a.response?.error === 'string' && <div style={{ color: 'var(--high)' }}>{a.response.error}</div>}
+              {Array.isArray(a.response?.documents) && a.response.documents.length > 0 && (
+                <div className="muted">附件：{(a.response.documents as string[]).join('、')}</div>
+              )}
+              {typeof a.response?.reportSkipped === 'string' && <div style={{ color: 'var(--medium, #9a6700)' }}>没有附上报告：{a.response.reportSkipped}</div>}
               {typeof a.response?.message === 'string' && <div style={{ marginTop: 3, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{a.response.message}</div>}
             </div>
           ))}
         </div>
       )}
 
-      {confirming && (
+      {confirming && current && (
         <div className="modal-back" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
           <div className="modal">
             <h2 id="confirm-title">确认：{current.label}</h2>
@@ -246,12 +283,24 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
               )}
               <dt>收件方</dt>
               <dd>{recipient}</dd>
-              {current.type === 'provide_evidence' && (
+              {(current.type === 'provide_evidence' || current.type === 'appeal') && (
                 <>
                   <dt>证据类型</dt>
                   <dd className="mono">{current.evidenceType}</dd>
+                </>
+              )}
+              {ATTACH_TYPES.has(current.type) && (
+                <>
                   <dt>附件</dt>
-                  <dd>{attachEvidence && paypal.attachments > 0 ? `${paypal.attachments} 张关键证据图片` : '不附图片'}</dd>
+                  <dd>{attachmentSummary(REPORT_TYPES.has(current.type) && attachReport && paypal.reportAvailable, attachEvidence ? paypal.attachments : 0)}</dd>
+                </>
+              )}
+              {current.type === 'acknowledge_return_item' && (
+                <>
+                  <dt>验收结果</dt>
+                  <dd>
+                    {ACK_LABEL[ackType]} <span className="mono small">{ackType}</span>
+                  </dd>
                 </>
               )}
               {current.trackingNumber && (
@@ -300,6 +349,11 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
   );
 }
 
+function attachmentSummary(report: boolean, images: number): string {
+  const parts = [report ? '核验报告 PDF' : null, images > 0 ? `${images} 张关键证据图片` : null].filter(Boolean);
+  return parts.length ? parts.join(' + ') : '不附文件';
+}
+
 function ActionFields(p: {
   action: SuggestedAction;
   message: string;
@@ -310,6 +364,11 @@ function ActionFields(p: {
   setAmount: (v: string) => void;
   attachEvidence: boolean;
   setAttachEvidence: (v: boolean) => void;
+  attachReport: boolean;
+  setAttachReport: (v: boolean) => void;
+  reportAvailable: boolean;
+  ackType: ReturnAckType;
+  setAckType: (v: ReturnAckType) => void;
   attachmentCount: number;
   currency: string;
   maxAmount: number;
@@ -334,13 +393,31 @@ function ActionFields(p: {
           )}
         </label>
       )}
-      {(t === 'provide_evidence' || t === 'make_offer' || t === 'accept_claim') && (
+      {t === 'acknowledge_return_item' && (
         <label className="field">
-          {t === 'provide_evidence' ? '提交给 PayPal 的说明（可编辑）' : '说明（可编辑）'}
-          <textarea rows={t === 'accept_claim' ? 2 : 5} value={p.notes} onChange={(e) => p.setNotes(e.target.value)} />
+          验收结果（按实际开箱情况选择）
+          <select value={p.ackType} onChange={(e) => p.setAckType(e.target.value as ReturnAckType)}>
+            {RETURN_ACK_TYPES.map((k) => (
+              <option key={k} value={k}>
+                {ACK_LABEL[k]}
+              </option>
+            ))}
+          </select>
         </label>
       )}
-      {t === 'provide_evidence' && (
+      {t !== 'send_message' && t !== 'refund' && t !== 'none' && t !== 'escalate' && (
+        <label className="field">
+          {t === 'provide_evidence' || t === 'appeal' || t === 'provide_supporting_info' ? '提交给 PayPal 的说明（可编辑）' : '说明（可编辑）'}
+          <textarea rows={t === 'accept_claim' || t === 'acknowledge_return_item' ? 2 : 5} value={p.notes} onChange={(e) => p.setNotes(e.target.value)} />
+        </label>
+      )}
+      {REPORT_TYPES.has(t) && (
+        <label className="row" style={{ marginBottom: 6 }}>
+          <input type="checkbox" checked={p.attachReport && p.reportAvailable} disabled={!p.reportAvailable} onChange={(e) => p.setAttachReport(e.target.checked)} />
+          {p.reportAvailable ? '附核验报告 PDF（提交版，不含内部风险标记和草稿）' : '服务器缺少中文字体，无法生成报告 PDF'}
+        </label>
+      )}
+      {ATTACH_TYPES.has(t) && (
         <label className="row" style={{ marginBottom: 12 }}>
           <input type="checkbox" checked={p.attachEvidence} disabled={p.attachmentCount === 0} onChange={(e) => p.setAttachEvidence(e.target.checked)} />
           {p.attachmentCount > 0 ? `附关键证据图片（${p.attachmentCount} 张）` : '没有可以附上的证据图片'}

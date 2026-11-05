@@ -4,7 +4,7 @@
 //
 // PayPal 的争议接口不支持 PayPal-Request-Id，幂等键只在本地生效。
 // 所以超时、断连、5xx 记为 unknown（结果不明），在商家对账之前这笔索赔不能再执行任何动作。
-import type { ActionType } from '@/core/types';
+import { RETURN_ACK_TYPES, type ActionType, type ReturnAckType } from '@/core/types';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
 import { clientForEnv, requireSandbox } from '@/paypal';
 import { PayPalApiError, type DisputeView, type PayPalDocument, type PayPalEnv, type PayPalWriteResult } from '@/paypal/client';
@@ -30,12 +30,28 @@ export interface ActionRequest {
     trackingNumber?: string;
     carrier?: string;
     attachEvidence?: boolean;
+    /** 附核验报告 PDF（provide_evidence、appeal）。 */
+    attachReport?: boolean;
+    acknowledgementType?: ReturnAckType;
   };
 }
 
 export type ActionOutcome = { status: number; body: Record<string, unknown> };
 
-const VALID_TYPES: ActionType[] = ['refund', 'accept_claim', 'send_message', 'provide_evidence', 'make_offer', 'escalate'];
+const VALID_TYPES: ActionType[] = [
+  'refund',
+  'accept_claim',
+  'send_message',
+  'provide_evidence',
+  'make_offer',
+  'escalate',
+  'provide_supporting_info',
+  'acknowledge_return_item',
+  'appeal',
+];
+/** 带证据附件的动作。 */
+const EVIDENCE_TYPES = new Set<ActionType>(['provide_evidence', 'appeal']);
+const ATTACHMENT_TYPES = new Set<ActionType>(['provide_evidence', 'appeal', 'provide_supporting_info']);
 const MAX_TEXT = 2000;
 // 进程在调用途中崩溃时，动作会一直停在 pending。超过这个时间才允许人工对账。
 const STUCK_PENDING_MS = 2 * 60 * 1000;
@@ -44,6 +60,7 @@ const DEFAULT_NOTE: Partial<Record<ActionType, string>> = {
   make_offer: '商家提出退款以解决这笔争议。',
   accept_claim: '商家接受买家的索赔。',
   escalate: '商家不同意买家的说法，请求 PayPal 介入。',
+  acknowledge_return_item: '商家已处理买家退回的包裹。',
 };
 
 export interface PayPalState {
@@ -56,6 +73,8 @@ export interface PayPalState {
 export async function paypalState(claim: ClaimRow, order: OrderRow, opts: { fresh?: boolean } = {}): Promise<PayPalState> {
   const env = order.paypal_env;
   const closed = claim.status === 'closed';
+  // 已结案的索赔只保留申诉：PayPal 判买家胜诉后，详情里会出现 appeal 链接。
+  const onClosed = (allowed: ActionType[]) => (closed ? allowed.filter((a) => a === 'appeal') : allowed);
   if (!claim.paypal_dispute_id) {
     // 没有争议时退款走订单的捕获记录。还没付款的订单没有可退的东西。
     const allowed: ActionType[] = order.capture_id ? ['refund', 'send_message', 'make_offer'] : ['send_message'];
@@ -65,7 +84,7 @@ export async function paypalState(claim: ClaimRow, order: OrderRow, opts: { fres
     const dispute = await clientForEnv(env).getDispute(claim.paypal_dispute_id, opts);
     return {
       env,
-      allowed: closed ? [] : (dispute?.allowedActions ?? []),
+      allowed: onClosed(dispute?.allowedActions ?? []),
       dispute,
       error: dispute ? null : 'PayPal 找不到这笔争议',
     };
@@ -90,11 +109,13 @@ function validate(req: ActionRequest, order: OrderRow): string | null {
   if (type === 'send_message' && !payload.message?.trim()) return '消息内容不能为空';
   if ((payload.message?.length ?? 0) > MAX_TEXT) return `消息不能超过 ${MAX_TEXT} 字`;
   if ((payload.notes?.length ?? 0) > MAX_TEXT) return `说明不能超过 ${MAX_TEXT} 字`;
-  if (type === 'provide_evidence') {
+  if (EVIDENCE_TYPES.has(type)) {
     if (!payload.notes?.trim()) return '提交说明不能为空';
     if (payload.evidenceType !== 'OTHER' && payload.evidenceType !== 'PROOF_OF_FULFILLMENT') return '证据类型无效';
     if (payload.evidenceType === 'PROOF_OF_FULFILLMENT' && !payload.trackingNumber) return '物流证据需要物流单号';
   }
+  if (type === 'provide_supporting_info' && !payload.notes?.trim()) return '补充说明不能为空';
+  if (type === 'acknowledge_return_item' && !RETURN_ACK_TYPES.includes(payload.acknowledgementType as ReturnAckType)) return '请选择退货验收结果';
   if (type === 'make_offer' || type === 'refund') {
     if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return '金额必须大于 0';
     if (amount > order.amount) return `金额不能超过订单金额 ${order.amount}`;
@@ -103,6 +124,13 @@ function validate(req: ActionRequest, order: OrderRow): string | null {
 }
 
 async function callPayPal(req: ActionRequest, claim: ClaimRow, order: OrderRow, message: string, documents: PayPalDocument[]): Promise<PayPalWriteResult> {
+  const evidenceInput = () => ({
+    evidenceType: req.payload.evidenceType!,
+    notes: req.payload.notes!,
+    documents,
+    trackingNumber: req.payload.trackingNumber,
+    carrier: req.payload.carrier,
+  });
   const pp = clientForEnv(order.paypal_env);
   const key = req.idempotencyKey;
   const disputeId = claim.paypal_dispute_id;
@@ -120,17 +148,13 @@ async function callPayPal(req: ActionRequest, claim: ClaimRow, order: OrderRow, 
       return { ...res, message };
     }
     case 'provide_evidence':
-      return pp.provideEvidence(
-        disputeId!,
-        {
-          evidenceType: payload.evidenceType!,
-          notes: payload.notes!,
-          documents,
-          trackingNumber: payload.trackingNumber,
-          carrier: payload.carrier,
-        },
-        key,
-      );
+      return pp.provideEvidence(disputeId!, evidenceInput(), key);
+    case 'appeal':
+      return pp.appealDispute(disputeId!, evidenceInput(), key);
+    case 'provide_supporting_info':
+      return pp.provideSupportingInfo(disputeId!, { notes: payload.notes!, documents }, key);
+    case 'acknowledge_return_item':
+      return pp.acknowledgeReturnItem(disputeId!, { note, acknowledgementType: payload.acknowledgementType! }, key);
     case 'make_offer':
       if (disputeId) {
         return pp.makeOffer(disputeId, { amount: payload.amount!, currency: order.currency, note }, key);
@@ -152,6 +176,10 @@ const AFTER_ACTION: Record<ActionType, { status: 'closed' | 'action_sent'; title
   provide_evidence: { status: 'action_sent', title: '商家提交证据' },
   make_offer: { status: 'action_sent', title: '商家提出和解' },
   escalate: { status: 'action_sent', title: '商家升级争议' },
+  provide_supporting_info: { status: 'action_sent', title: '商家补充说明' },
+  acknowledge_return_item: { status: 'action_sent', title: '商家确认退货验收结果' },
+  // 申诉让已结案的索赔重新进入处理中，PayPal 再次结案时同步会把它关掉。
+  appeal: { status: 'action_sent', title: '商家提出申诉' },
 };
 
 interface PreviousAction {
@@ -201,7 +229,11 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
   const invalid = validate(req, order);
   if (invalid) return { status: 400, body: { error: invalid } };
 
-  const documents = req.type === 'provide_evidence' && req.payload.attachEvidence ? await buildEvidenceDocuments(claim.id) : [];
+  const wantsFiles = ATTACHMENT_TYPES.has(req.type) && (req.payload.attachEvidence || (EVIDENCE_TYPES.has(req.type) && req.payload.attachReport));
+  const bundle = wantsFiles
+    ? await buildEvidenceDocuments(claim.id, { evidence: !!req.payload.attachEvidence, report: EVIDENCE_TYPES.has(req.type) && !!req.payload.attachReport })
+    : { documents: [], reportSkipped: null };
+  const documents = bundle.documents;
 
   // 上面有 await，真实网络下其他请求可能已经插进来。从这里到 INSERT 不能再有 await，
   // 否则两个请求都能通过检查，退款就可能发出两次。
@@ -237,7 +269,10 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
     .run(actionId, claim.id, verdict.id, req.type, JSON.stringify(req.payload), req.confirmedBy, confirmedAt, req.idempotencyKey);
 
   try {
-    const response = await callPayPal(req, claim, order, message, documents);
+    const result = await callPayPal(req, claim, order, message, documents);
+    const response: PayPalWriteResult = { ...result };
+    if (documents.length) response.documents = documents.map((d) => d.name);
+    if (bundle.reportSkipped) response.reportSkipped = bundle.reportSkipped;
     conn.prepare("UPDATE actions SET status = 'succeeded', paypal_response = ? WHERE id = ?").run(JSON.stringify(response), actionId);
     const after = AFTER_ACTION[req.type];
     conn.prepare('UPDATE claims SET status = ? WHERE id = ?').run(after.status, claim.id);

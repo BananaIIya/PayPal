@@ -22,7 +22,7 @@ npm run dev
 
 | 命令 | 作用 |
 |---|---|
-| `npm test` | 运行判定引擎、18 个验收场景、服务端和 PayPal 沙箱客户端的测试（沙箱测试用模拟响应，不访问网络） |
+| `npm test` | 运行判定引擎、18 个验收场景、服务端、核验报告 PDF 和 PayPal 沙箱客户端的测试（沙箱测试用模拟响应，不访问网络） |
 | `npm run typecheck` | 类型检查 |
 | `npm run reset` | 删除 `.data/`，下次启动时重新生成（需先停止服务）。也可以在“设置”页重置 |
 | `npm run dev:phone` | 用手机测试摄像头，见下文 |
@@ -52,6 +52,36 @@ npm run dev
 | AI 生成检测器、SynthID | 未接入 | 真实图片的 Synthetic 显示“未执行” |
 
 演示图片都是程序画的占位图，右下角标有“演示占位图”。
+
+## 核验报告 PDF
+
+报告页右上角可以“下载 PDF”。提交反驳证据（`provide-evidence`）和申诉（`appeal`）时默认附上报告，文件名 `verdict-report.pdf`，排在证据图片前面。
+
+报告有两个版本：
+
+| 版本 | 用途 | 和网页报告的区别 |
+|---|---|---|
+| 商家版 | 下载存档 | 内容相同 |
+| 提交版 | 随证据发给 PayPal，可在报告页“预览提交版” | 不含商家侧风险 M、内部提示、草稿、规则轨迹和 Behavior 分析器的发现（开发文档：内部风险标记不对外展示）。图片只用这笔索赔自己的证据和本订单的留底，复用检测引用的其他买家图片不会出现 |
+
+PDF 要内嵌中文字体，字体不随仓库分发。系统会按顺序找 Noto Sans CJK、文泉驿、macOS 的华文黑体/宋体/Arial Unicode、Windows 的微软雅黑/黑体。都没有时：
+
+- 报告页的“下载 PDF”返回 503 并说明原因；
+- 提交证据照常进行，只附图片，动作记录里写明“没有附上报告”，动作面板的勾选框也会变灰。
+
+也可以用 `VERDICT_REPORT_FONT` 指定字体文件，TTC 字体集要再用 `VERDICT_REPORT_FONT_FAMILY` 指定 PostScript 名称。
+
+## 后续争议操作
+
+判定引擎只根据证据给建议，不知道争议走到了哪一步。下面三个操作在 PayPal 给出对应链接时才出现在动作面板里，草稿由 `followUpDraft`（`src/core/recommend.ts`）生成：
+
+| 操作 | 什么时候出现 | 说明 |
+|---|---|---|
+| 向 PayPal 补充说明 `provide-supporting-info` | 争议在 `UNDER_REVIEW` | 追加说明和关键证据图片 |
+| 确认退货收货情况 `acknowledge-return-item` | 退货纠纷中买家已寄回 | 商家按实际开箱结果选择 `ITEM_RECEIVED`、`EMPTY_PACKAGE_OR_DIFFERENT` 等。默认是“已收到”，系统不会替商家选择负面结果 |
+| 申诉 `appeal` | PayPal 判买家胜诉后 | 已结案的索赔只开放这一项；申诉后索赔回到“已执行动作”，PayPal 再次结案时自动关闭 |
+
+模拟器支持补充说明（提交证据后争议进入 `UNDER_REVIEW`，就能看到这一项）。模拟器没有退货流程和裁决，所以确认退货和申诉只能在沙箱里试。
 
 ## 接入 Claude（可选）
 
@@ -127,13 +157,17 @@ PayPal 的争议接口不支持 `PayPal-Request-Id`，所以遇到超时、断�
 | 回跳地址 | `http://localhost:3000/api/paypal/return` | 不确定 PayPal 是否接受 localhost。不行时配置 `PUBLIC_URL` 用隧道地址 |
 | 争议链接的 `rel` 名称 | 同时按 href 结尾和 rel 匹配 | 文档里只有占位示例 |
 | 非英文的说明文字 | 中文直接发送 | 文档没有说明字段是否限制字符集 |
+| 补充说明的请求格式 | multipart，`input` 为 `{"notes": ...}`，文件 `file1`… | 与提交证据同样存在文件字段名的疑问 |
+| 确认退货的请求格式 | JSON `{"note", "acknowledgement_type"}`，不带附件 | 接口也接受 multipart 附件，目前没有用 |
+| 申诉的请求格式 | 与提交证据相同的 `evidences` 结构 | 文档说明较少，按 provide-evidence 的写法实现 |
+| 报告 PDF 能否被 PayPal 接受 | `application/pdf`，小于 10MB | PayPal 列出的格式包含 PDF，但没有用真实沙箱试过中文 PDF |
 
 **和开发文档的差异**
 
 - 文档假设 `PayPal-Request-Id` 能保证所有写操作幂等，实际只有退款和下单支持，所以加了“结果不明”处理。
-- 文档要求附核验报告 PDF，目前没有 PDF 生成，改为附反驳信号引用的证据图片。
+- 文档的报告导出选型是 `@react-pdf/renderer`，这里用的是 `pdfkit`：不依赖 React 渲染器，便于在动作执行器里直接生成。
 - 文档的 `demo-shop` 做成了订单页上的“沙箱测试下单”。
-- 没有实现 `provide-supporting-info`、`appeal`、`acknowledge-return-item`。遇到这些状态请到 PayPal 后台处理。
+- 确认退货目前不附验收照片；申诉和补充说明可以附报告和证据图片。
 
 ## 用手机测试摄像头
 
@@ -161,7 +195,7 @@ npm run dev:phone
 - PayPal 正式环境：只支持沙箱
 - 登录和多商家权限：控制台没有登录，默认只监听 127.0.0.1
 - 视频证据：只支持照片
-- PDF 报告：报告是可打印的网页，用浏览器“存为 PDF”
+- PDF 报告的可疑区域标框：网页上有，PDF 里只放缩略图
 - 由 LLM 撰写的报告和草稿：目前是确定性模板
 - Postgres、BullMQ、S3：MVP 用 SQLite、进程内任务和本地磁盘代替，模块边界按原方案划分，之后可以替换
 

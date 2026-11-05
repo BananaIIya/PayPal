@@ -1,8 +1,8 @@
 // PayPal 模拟器：行为对齐开发文档列出的争议接口，状态存在本地 SQLite，不产生任何真实资金流动。
 import crypto from 'node:crypto';
-import type { ActionType } from '@/core/types';
+import type { ActionType, ReturnAckType } from '@/core/types';
 import { db, json, newId, nowIso } from '@/server/db';
-import type { DisputeView, PayPalClient, PayPalDocument, PayPalWriteResult } from './client';
+import type { DisputeView, EvidenceInput, PayPalClient, PayPalDocument, PayPalWriteResult } from './client';
 
 interface DisputeRow {
   id: string;
@@ -37,7 +37,8 @@ function allowed(row: DisputeRow): ActionType[] {
     return ['send_message', 'provide_evidence', 'make_offer', 'accept_claim', 'escalate'];
   }
   if (row.status === 'WAITING_FOR_BUYER_RESPONSE') return ['send_message', 'accept_claim', 'escalate'];
-  if (row.status === 'UNDER_REVIEW') return ['accept_claim'];
+  // 模拟器没有退货流程和裁决，所以不会给出 acknowledge_return_item 和 appeal。
+  if (row.status === 'UNDER_REVIEW') return ['accept_claim', 'provide_supporting_info'];
   return [];
 }
 
@@ -122,15 +123,26 @@ export class PayPalSimulator implements PayPalClient {
     return this.mutate(disputeId, 'send_message', requestId, `POST /v1/customer/disputes/${disputeId}/send-message`, { message });
   }
 
-  async provideEvidence(
-    disputeId: string,
-    input: { evidenceType: string; notes: string; documents: PayPalDocument[]; trackingNumber?: string; carrier?: string },
-    requestId: string,
-  ) {
+  async provideEvidence(disputeId: string, input: EvidenceInput, requestId: string) {
     const detail = { ...input, documents: input.documents.map((d) => d.name) };
     return this.mutate(disputeId, 'provide_evidence', requestId, `POST /v1/customer/disputes/${disputeId}/provide-evidence`, detail, {
       status: 'UNDER_REVIEW',
     });
+  }
+
+  async provideSupportingInfo(disputeId: string, input: { notes: string; documents: PayPalDocument[] }, requestId: string) {
+    const detail = { notes: input.notes, documents: input.documents.map((d) => d.name) };
+    const res = this.mutate(disputeId, 'provide_supporting_info', requestId, `POST /v1/customer/disputes/${disputeId}/provide-supporting-info`, detail);
+    return { ...res, documents: detail.documents };
+  }
+
+  async acknowledgeReturnItem(disputeId: string, input: { note: string; acknowledgementType: ReturnAckType }, requestId: string) {
+    return this.mutate(disputeId, 'acknowledge_return_item', requestId, `POST /v1/customer/disputes/${disputeId}/acknowledge-return-item`, input);
+  }
+
+  async appealDispute(disputeId: string, input: EvidenceInput, requestId: string) {
+    const detail = { ...input, documents: input.documents.map((d) => d.name) };
+    return this.mutate(disputeId, 'appeal', requestId, `POST /v1/customer/disputes/${disputeId}/appeal`, detail, { status: 'UNDER_REVIEW' });
   }
 
   async makeOffer(disputeId: string, input: { amount: number; currency: string; note: string }, requestId: string) {

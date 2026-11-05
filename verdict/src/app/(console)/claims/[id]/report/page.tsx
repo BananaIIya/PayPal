@@ -24,7 +24,15 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
     <div className="report">
       <div className="between no-print" style={{ marginBottom: 16 }}>
         <Link href={`/claims/${id}`}>← 返回索赔</Link>
-        <PrintButton />
+        <div className="row">
+          <a className="btn" href={`/api/claims/${id}/report.pdf`} target="_blank" rel="noreferrer">
+            下载 PDF
+          </a>
+          <a className="btn" href={`/api/claims/${id}/report.pdf?audience=paypal`} target="_blank" rel="noreferrer" title="随证据提交给 PayPal 的版本：不含商家侧风险、内部提示、草稿和行为分析">
+            预览提交版
+          </a>
+          <PrintButton />
+        </div>
       </div>
       <div className="card card-pad" style={{ padding: 28 }}>
         <h1 style={{ marginBottom: 4 }}>核验报告</h1>

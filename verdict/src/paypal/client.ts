@@ -1,7 +1,7 @@
 // PayPal 接口的抽象。有两个实现：simulator（演示数据）和 sandbox（真实沙箱）。
 // 一笔订单走哪个实现由 orders.paypal_env 决定，模拟数据不会发往沙箱，沙箱数据也不会落到模拟器。
 // 写接口只有动作执行器（server/actions.ts）可以调用。
-import type { ActionType } from '@/core/types';
+import type { ActionType, ReturnAckType } from '@/core/types';
 
 export type PayPalEnv = 'simulator' | 'sandbox';
 
@@ -72,15 +72,22 @@ export class PayPalApiError extends Error {
   }
 }
 
+export interface EvidenceInput {
+  evidenceType: string;
+  notes: string;
+  documents: PayPalDocument[];
+  trackingNumber?: string;
+  carrier?: string;
+}
+
 export interface PayPalClient {
   readonly name: string;
   getDispute(id: string, opts?: { fresh?: boolean }): Promise<DisputeView | null>;
   sendMessage(disputeId: string, message: string, requestId: string): Promise<PayPalWriteResult>;
-  provideEvidence(
-    disputeId: string,
-    input: { evidenceType: string; notes: string; documents: PayPalDocument[]; trackingNumber?: string; carrier?: string },
-    requestId: string,
-  ): Promise<PayPalWriteResult>;
+  provideEvidence(disputeId: string, input: EvidenceInput, requestId: string): Promise<PayPalWriteResult>;
+  provideSupportingInfo(disputeId: string, input: { notes: string; documents: PayPalDocument[] }, requestId: string): Promise<PayPalWriteResult>;
+  acknowledgeReturnItem(disputeId: string, input: { note: string; acknowledgementType: ReturnAckType }, requestId: string): Promise<PayPalWriteResult>;
+  appealDispute(disputeId: string, input: EvidenceInput, requestId: string): Promise<PayPalWriteResult>;
   makeOffer(disputeId: string, input: { amount: number; currency: string; note: string }, requestId: string): Promise<PayPalWriteResult>;
   acceptClaim(disputeId: string, note: string, requestId: string): Promise<PayPalWriteResult>;
   escalate(disputeId: string, note: string, requestId: string): Promise<PayPalWriteResult>;

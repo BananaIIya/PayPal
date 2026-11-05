@@ -10,7 +10,7 @@ function lanAddresses(): string[] {
 }
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ['sharp'],
+  serverExternalPackages: ['sharp', 'pdfkit'],
   devIndicators: false,
   allowedDevOrigins: lanAddresses(),
 };

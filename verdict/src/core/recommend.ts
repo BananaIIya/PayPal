@@ -8,6 +8,7 @@ import type {
   Signal,
   SuggestedAction,
   VerdictLevel,
+  VerdictReport,
 } from './types';
 
 export const PORTAL_LINK_PLACEHOLDER = '{{索赔页链接}}';
@@ -19,6 +20,9 @@ const OPERATION: Record<ActionType, (hasDispute: boolean) => string> = {
   provide_evidence: () => 'POST /v1/customer/disputes/{id}/provide-evidence',
   make_offer: (d) => (d ? 'POST /v1/customer/disputes/{id}/make-offer' : 'POST /v2/payments/captures/{capture_id}/refund（部分）'),
   escalate: () => 'POST /v1/customer/disputes/{id}/escalate',
+  provide_supporting_info: () => 'POST /v1/customer/disputes/{id}/provide-supporting-info',
+  acknowledge_return_item: () => 'POST /v1/customer/disputes/{id}/acknowledge-return-item',
+  appeal: () => 'POST /v1/customer/disputes/{id}/appeal',
 };
 
 interface Ctx {
@@ -176,15 +180,20 @@ function proofOfFulfillmentAction(ctx: Ctx): SuggestedAction {
     trackingNumber: claim.trackingNumber ?? undefined,
     carrier: claim.carrier ?? undefined,
     attachEvidence: true,
+    attachReport: true,
   };
 }
 
-function evidenceAction(ctx: Ctx): SuggestedAction {
-  const facts = ctx.findings
-    .filter((f) => f.direction === 'contradicts_claim' && f.strength !== 'weak')
+function factList(findings: Finding[]): string {
+  return findings
+    .filter((f) => f.direction === 'contradicts_claim' && f.strength !== 'weak' && f.analyzer !== 'behavior')
     .slice(0, 4)
     .map((f, i) => `${i + 1}. ${f.explanation}`)
     .join('\n');
+}
+
+function evidenceAction(ctx: Ctx): SuggestedAction {
+  const facts = factList(ctx.findings);
   return {
     type: 'provide_evidence',
     label: '提交反驳证据',
@@ -193,7 +202,59 @@ function evidenceAction(ctx: Ctx): SuggestedAction {
     evidenceType: 'OTHER',
     notes: `商家经核验发现以下事实：\n${facts}`,
     attachEvidence: true,
+    attachReport: true,
   };
+}
+
+/** 判定引擎不会主动建议、但 PayPal 当前允许的后续操作。 */
+export const FOLLOW_UP_TYPES = ['provide_supporting_info', 'acknowledge_return_item', 'appeal'] as const satisfies readonly ActionType[];
+export type FollowUpType = (typeof FOLLOW_UP_TYPES)[number];
+
+/**
+ * 后续操作的草稿。判定引擎只看证据，不知道争议走到了哪一步，所以这些操作不进建议列表，
+ * 而是在 PayPal 给出对应链接时由控制台追加，草稿仍然由这里统一生成，措辞规则与建议动作一致。
+ */
+export function followUpDraft(type: FollowUpType, report: VerdictReport, claim: { trackingNumber?: string | null; carrier?: string | null }): SuggestedAction {
+  const facts = factList(report.findings);
+  switch (type) {
+    case 'provide_supporting_info':
+      return {
+        type,
+        label: '向 PayPal 补充说明',
+        reason: 'PayPal 正在审理这笔争议，可以追加说明和关键证据。只补充新的事实，不要重复已提交的内容。',
+        paypalOperation: OPERATION.provide_supporting_info(true),
+        notes: facts ? `补充说明：商家核验后确认以下事实：\n${facts}` : '补充说明：',
+        attachEvidence: true,
+      };
+    case 'acknowledge_return_item': {
+      const related = report.findings
+        .filter((f) => f.direction === 'contradicts_claim' && (f.analyzer === 'logistics' || f.analyzer === 'reference'))
+        .map((f) => f.title);
+      return {
+        type,
+        label: '确认退货收货情况',
+        reason: related.length
+          ? `请按实际验收结果选择。核验中有与退回物相关的发现（${related.join('、')}），但系统无法代替开箱验收。`
+          : '请按实际验收结果选择。系统无法代替开箱验收，默认选项只是“已收到”。',
+        paypalOperation: OPERATION.acknowledge_return_item(true),
+        acknowledgementType: 'ITEM_RECEIVED',
+        notes: '商家已收到买家退回的包裹。',
+      };
+    }
+    case 'appeal':
+      return {
+        type,
+        label: '申诉',
+        reason: 'PayPal 已判买家胜诉。只有掌握新的、可验证的证据时申诉才有意义，提交前请核对“需排除的正常解释”。',
+        paypalOperation: OPERATION.appeal(true),
+        evidenceType: claim.trackingNumber && report.findings.some((f) => f.code === 'DELIVERED_CONFIRMED') ? 'PROOF_OF_FULFILLMENT' : 'OTHER',
+        notes: facts ? `商家申诉，依据以下核验事实：\n${facts}` : '商家申诉，依据如下：',
+        trackingNumber: claim.trackingNumber ?? undefined,
+        carrier: claim.carrier ?? undefined,
+        attachEvidence: true,
+        attachReport: true,
+      };
+  }
 }
 
 function offerAction(ctx: Ctx): SuggestedAction {
