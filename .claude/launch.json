@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "verdict",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "verdict", "run", "dev"],
+      "port": 3000
+    }
+  ]
+}
