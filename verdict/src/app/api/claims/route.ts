@@ -6,7 +6,8 @@ import { createClaim } from '@/server/ingest';
 import { startAnalysis } from '@/server/pipeline';
 import { addEvidence, addTimeline, defaultMerchantId, getOrder, listClaims } from '@/server/repo';
 import { maskClaimList } from '@/server/shadow';
-import { MAX_UPLOAD_BYTES, sniffImageType } from '@/server/storage';
+import { MAX_UPLOAD_BYTES, MAX_VIDEO_BYTES, requestTooLarge, sniffImageType, sniffVideoType, type VideoMime } from '@/server/storage';
+import { addVideoEvidence } from '@/server/video';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest) {
   await ready();
   const auth = authorize(req, { write: true });
   if (auth instanceof NextResponse) return auth;
+  if (requestTooLarge(req)) return NextResponse.json({ error: '一次上传的文件合计超过 48MB，请分几次上传' }, { status: 413 });
   const form = await req.formData();
   const orderId = String(form.get('orderId') ?? '');
   const type = String(form.get('claimType') ?? '') as ClaimType;
@@ -39,13 +41,16 @@ export async function POST(req: NextRequest) {
     ...screenshots.map((file) => ({ file, shot: 'chat_screenshot' })),
   ];
 
-  const parsed: { buf: Buffer; mime: string; shot: string | null }[] = [];
+  const parsed: { buf: Buffer; mime: string; video: VideoMime | null; shot: string | null }[] = [];
   for (const { file, shot } of files) {
-    if (file.size > MAX_UPLOAD_BYTES) return NextResponse.json({ error: `${file.name} 超过 15MB` }, { status: 413 });
+    if (file.size > MAX_VIDEO_BYTES) return NextResponse.json({ error: `${file.name} 超过 40MB` }, { status: 413 });
     const buf = Buffer.from(await file.arrayBuffer());
-    const mime = sniffImageType(buf);
-    if (!mime) return NextResponse.json({ error: `${file.name} 不是 JPEG、PNG 或 WebP 图片` }, { status: 415 });
-    parsed.push({ buf, mime, shot });
+    // 截图只能是图片；买家私下发来的视频按照片一样导入。
+    const video = shot ? null : sniffVideoType(buf);
+    const mime = video ?? sniffImageType(buf);
+    if (!mime) return NextResponse.json({ error: `${file.name} 不是 JPEG、PNG、WebP 图片或 MP4、WebM、MOV 视频` }, { status: 415 });
+    if (!video && buf.length > MAX_UPLOAD_BYTES) return NextResponse.json({ error: `${file.name} 超过 15MB` }, { status: 413 });
+    parsed.push({ buf, mime, video, shot });
   }
 
   const claimId = createClaim({
@@ -58,8 +63,9 @@ export async function POST(req: NextRequest) {
   });
   addTimeline(claimId, 'claim', '商家手动导入', `${parsed.length} 份文件`);
   for (const p of parsed) {
-    await addEvidence({ claimId, orderId, source: 'manual_import', file: p.buf, mime: p.mime, shot: p.shot });
-    addTimeline(claimId, 'evidence', '证据上传', p.shot ?? '商家导入的照片');
+    if (p.video) await addVideoEvidence({ claimId, orderId, source: 'manual_import', file: p.buf, mime: p.video, shot: null });
+    else await addEvidence({ claimId, orderId, source: 'manual_import', file: p.buf, mime: p.mime, shot: p.shot });
+    addTimeline(claimId, 'evidence', '证据上传', p.shot ?? (p.video ? '商家导入的视频' : '商家导入的照片'));
   }
   startAnalysis(claimId);
   return NextResponse.json({ claimId });

@@ -12,7 +12,7 @@ import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ANALYZER_LABEL, CLAIM_TYPE_LABEL, describeConfig, LEVEL_LABEL, SHOT_LABEL, SOURCE_LABEL, STRENGTH_LABEL } from '@/core/catalog';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
-import type { Finding, VerdictReport } from '@/core/types';
+import type { BBox, Finding, VerdictReport } from '@/core/types';
 import { claimDetail, type ClaimDetail } from './repo';
 import { readFile } from './storage';
 
@@ -88,6 +88,9 @@ export function horizontalFeatures(): PDFKit.Mixins.OpenTypeFeatures[] {
 // 只给商家看的操作记录。标题与 server/actions.ts、重新分析接口里写入时间线的文字一致，改那边时要一起改（有测试兜底）。
 const INTERNAL_TIMELINE_TITLES = new Set(['动作执行失败', '动作结果不明', '动作未生效（人工核对）', '沙箱测试工具', '商家请求重新分析']);
 
+/** 抽出的帧在视频里的时间（秒，一位小数）。 */
+const frameSeconds = (e: { captureMeta?: Record<string, unknown> | null }) => (Number(e.captureMeta?.atMs ?? 0) / 1000).toFixed(1);
+
 /**
  * 提交版的时间线：去掉失败和结果不明的动作、人工对账、沙箱测试工具、重新分析；
  * 成功的动作只留标题，不带确认人账号和接口路径。
@@ -127,9 +130,23 @@ function headline(report: VerdictReport, findings: Finding[], audience: ReportAu
   return report.headline;
 }
 
-async function thumbnail(sha256: string): Promise<Buffer | null> {
+/** 缩略图上画出可疑区域（和网页上的框一致，坐标是相对图片宽高的比例）。 */
+async function thumbnail(sha256: string, boxes: BBox[] = []): Promise<Buffer | null> {
   try {
-    return await sharp(readFile(sha256)).rotate().resize({ width: 360, height: 270, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 78 }).toBuffer();
+    const resized = await sharp(readFile(sha256))
+      .rotate()
+      .resize({ width: 360, height: 270, fit: 'inside', withoutEnlargement: true })
+      .toBuffer({ resolveWithObject: true });
+    if (!boxes.length) return await sharp(resized.data).jpeg({ quality: 78 }).toBuffer();
+    const { width: w, height: h } = resized.info;
+    const rects = boxes
+      .map(([x, y, bw, bh]) => {
+        const r = (v: number, max: number) => Math.max(0, Math.min(max, Math.round(v * max)));
+        return `<rect x="${r(x, w)}" y="${r(y, h)}" width="${r(bw, w)}" height="${r(bh, h)}" fill="none" stroke="#d93025" stroke-width="3"/>`;
+      })
+      .join('');
+    const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${rects}</svg>`);
+    return await sharp(resized.data).composite([{ input: svg, top: 0, left: 0 }]).jpeg({ quality: 78 }).toBuffer();
   } catch {
     return null;
   }
@@ -149,16 +166,31 @@ export async function renderReportPdf(claimId: string, audience: ReportAudience)
   if (!font) throw new ReportFontUnavailableError();
 
   // 可以出现在报告里的图片：本索赔的证据和本订单的留底。
+  // 视频用第一帧做缩略图，抽出的帧标上在视频里的时间。
+  const all = [...detail.evidence, ...detail.references];
+  const firstFrame = (videoId: string) =>
+    all
+      .filter((x) => x.kind === 'frame' && x.parentId === videoId)
+      .sort((a, b) => Number(a.captureMeta?.atMs ?? 0) - Number(b.captureMeta?.atMs ?? 0))[0];
   const images = new Map<string, { sha256: string; label: string }>();
-  for (const e of [...detail.evidence, ...detail.references]) {
-    images.set(e.id, { sha256: e.sha256, label: `${e.layer} 层 · ${SHOT_LABEL[e.shotLabel ?? ''] ?? SOURCE_LABEL[e.source]}` });
+  for (const e of all) {
+    const shot = SHOT_LABEL[e.shotLabel ?? ''] ?? SOURCE_LABEL[e.source];
+    if (e.kind === 'video') {
+      const frame = firstFrame(e.id);
+      if (frame) images.set(e.id, { sha256: frame.sha256, label: `${e.layer} 层 · 视频首帧` });
+    } else if (e.kind === 'frame') {
+      images.set(e.id, { sha256: e.sha256, label: `${e.layer} 层 · 视频第 ${frameSeconds(e)} 秒` });
+    } else {
+      images.set(e.id, { sha256: e.sha256, label: `${e.layer} 层 · ${shot}` });
+    }
   }
   const thumbs = new Map<string, Buffer>();
   const findings = visibleFindings(detail.verdict.report, audience);
   for (const id of new Set(findings.flatMap((f) => f.evidenceIds))) {
     const image = images.get(id);
     if (!image) continue;
-    const buf = await thumbnail(image.sha256);
+    const boxes = findings.flatMap((f) => (f.region?.evidenceId === id ? [f.region.bbox] : []));
+    const buf = await thumbnail(image.sha256, boxes);
     if (buf) thumbs.set(id, buf);
   }
 
@@ -290,10 +322,11 @@ function draw(
 
   // ---------- 证据清单 ----------
   heading('证据清单');
-  if (detail.evidence.length === 0) small('没有图片证据。');
+  if (detail.evidence.length === 0) small('没有证据文件。');
   for (const e of detail.evidence) {
     ensureSpace(24);
-    para(`${e.layer} 层 · ${SOURCE_LABEL[e.source]} · ${SHOT_LABEL[e.shotLabel ?? ''] ?? '未标注'} · ${fmtTime(e.createdAt)}`, { size: 9 });
+    const what = e.kind === 'video' ? '视频 · ' : e.kind === 'frame' ? `视频第 ${frameSeconds(e)} 秒的帧 · ` : '';
+    para(`${what}${e.layer} 层 · ${SOURCE_LABEL[e.source]} · ${SHOT_LABEL[e.shotLabel ?? ''] ?? '未标注'} · ${fmtTime(e.createdAt)}`, { size: 9 });
     small(`SHA-256 ${e.sha256}${e.challenge ? ` · 挑战码 ${e.challenge.code}` : ''}`);
   }
 

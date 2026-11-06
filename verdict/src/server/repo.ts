@@ -201,25 +201,32 @@ export async function addEvidence(input: {
   challengeId?: string | null;
   captureMeta?: unknown;
   at?: string;
+  kind?: 'image' | 'video' | 'frame';
+  parentId?: string | null;
 }): Promise<{ id: string; sha256: string; layer: Layer }> {
   const hash = saveFile(input.file);
+  const kind = input.kind ?? 'image';
   let dhash: string | null = null;
-  try {
-    dhash = await perceptualHash(input.file);
-  } catch {
-    dhash = null; // 解码失败时跳过感知哈希，Origin 不会比对这份文件
+  if (kind !== 'video') {
+    try {
+      dhash = await perceptualHash(input.file);
+    } catch {
+      dhash = null; // 解码失败时跳过感知哈希，Origin 不会比对这份文件
+    }
   }
   const id = newId();
   const layer = SOURCE_LAYER[input.source];
   db()
     .prepare(
-      `INSERT INTO evidence (id, claim_id, order_id, kind, source, sha256, dhash, layer, mime_type, shot_label, challenge_id, capture_meta, created_at)
-       VALUES (?, ?, ?, 'image', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO evidence (id, claim_id, order_id, kind, parent_id, source, sha256, dhash, layer, mime_type, shot_label, challenge_id, capture_meta, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
       input.claimId,
       input.orderId,
+      kind,
+      input.parentId ?? null,
       input.source,
       hash,
       dhash,
@@ -324,7 +331,7 @@ export function claimTimeline(claimId: string) {
 }
 
 function publicEvidence(row: EvidenceRow) {
-  const r = row as EvidenceRow & { capture_meta?: string | null };
+  const r = row;
   const challenge = row.challenge_id
     ? (db().prepare('SELECT code, action FROM challenges WHERE id = ?').get(row.challenge_id) as { code: string; action: string } | undefined)
     : undefined;
@@ -333,6 +340,9 @@ function publicEvidence(row: EvidenceRow) {
     source: row.source,
     layer: row.layer as Layer,
     shotLabel: row.shot_label,
+    kind: (row.kind ?? 'image') as 'image' | 'video' | 'frame',
+    parentId: row.parent_id ?? null,
+    mimeType: row.mime_type,
     sha256: row.sha256,
     createdAt: row.created_at,
     purgedAt: row.purged_at ?? null,

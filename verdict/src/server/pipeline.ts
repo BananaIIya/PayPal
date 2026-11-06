@@ -1,6 +1,7 @@
 // 编排器：按索赔类型派发分析器，并行运行；任一分析器完成后重新计算判定。
 // MVP 用进程内执行代替 BullMQ + Worker，接口边界保持不变，之后可以把 runAnalysis 挪进 Worker。
 import { ANALYZER_IMPL, type AnalyzerContext, type OtherEvidence } from '@/analyzers';
+import { videoMeta } from '@/analyzers/video-meta';
 import { applicableAnalyzers } from '@/core/catalog';
 import { decide } from '@/core/engine';
 import type { AnalyzerName, EngineInput, MerchantRiskFactors } from '@/core/types';
@@ -159,6 +160,25 @@ function alreadyAgreed(order: OrderRow): boolean {
   return rows.some((m) => /同意.{0,6}退款|已为您退款|已退款/.test(m.text));
 }
 
+/**
+ * 开发文档：视频抽出的帧作为图片输入其余分析器，原视频只给 Consistency 和 Provenance。
+ * Provenance 不看帧：帧是 ffmpeg 重新编码的，不带任何元数据，只会多出一堆“未发现来源凭证”。
+ */
+function contextFor(analyzer: AnalyzerName, ctx: AnalyzerContext): AnalyzerContext {
+  const keep = (kind: string | undefined) => (analyzer === 'provenance' ? kind !== 'frame' : analyzer === 'consistency' ? true : kind !== 'video');
+  return { ...ctx, evidence: ctx.evidence.filter((e) => keep(e.kind)) };
+}
+
+/** 看画面的分析器（不含 Consistency，它自己会说明）在有视频没能抽帧时不算执行过：那段视频它们根本没看到。 */
+const FRAME_ANALYZERS = new Set<AnalyzerName>(['synthetic', 'origin', 'plausibility', 'reference']);
+
+function unframedVideoReason(analyzer: AnalyzerName, ctx: AnalyzerContext): string | null {
+  if (!FRAME_ANALYZERS.has(analyzer)) return null;
+  const unframed = ctx.evidence.find((e) => e.kind === 'video' && videoMeta(e.capture_meta)?.frameExtraction !== 'ok');
+  if (!unframed) return null;
+  return `视频没有抽帧（${videoMeta(unframed.capture_meta)?.reason ?? '原因未知'}），这个分析器没有看到视频画面；处理好后重新分析`;
+}
+
 function buildContext(claim: ClaimRow, order: OrderRow, offline: boolean): AnalyzerContext {
   const conn = db();
   const evidence = claimEvidence(claim.id);
@@ -313,7 +333,10 @@ export async function runAnalysis(claimId: string, opts: RunOptions = {}): Promi
         if (opts.latencyMs) await new Promise((r) => setTimeout(r, opts.latencyMs! * (index + 1)));
         setRun(claimId, analyzer, 'running');
         try {
-          const out = await withTimeout(ANALYZER_IMPL[analyzer](ctx), ANALYZER_TIMEOUT_MS);
+          const blocked = unframedVideoReason(analyzer, ctx);
+          const out = blocked
+            ? ({ status: 'unavailable', reason: blocked } as const)
+            : await withTimeout(ANALYZER_IMPL[analyzer](contextFor(analyzer, ctx)), ANALYZER_TIMEOUT_MS);
           if (out.status === 'unavailable') {
             setRun(claimId, analyzer, 'unavailable', { error: out.reason });
           } else {

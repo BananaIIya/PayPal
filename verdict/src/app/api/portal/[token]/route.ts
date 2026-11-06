@@ -50,6 +50,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ toke
       shots: requiredShots(type, policy).map((id) => ({ id, label: SHOT_LABEL[id] ?? id, hint: SHOT_HINT[id] ?? '' })),
     })),
     processors: order.paypal_env === 'sandbox' ? [...dataProcessors(), 'PayPal（商家提交争议证据时）'] : dataProcessors(),
-    uploaded: claimEvidence(claim.id).map((e) => ({ id: e.id, shot: e.shot_label, source: e.source })),
+    // 视频抽出的帧是系统生成的，不算买家上传的内容。
+    uploaded: claimEvidence(claim.id)
+      .filter((e) => e.kind !== 'frame')
+      .map((e) => ({ id: e.id, shot: e.shot_label, source: e.source, kind: e.kind })),
   });
 }

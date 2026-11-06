@@ -48,8 +48,9 @@ export function ImportForm({ orders }: { orders: { id: string; label: string }[]
         <textarea name="narrative" rows={5} placeholder="粘贴买家的邮件或私信内容" />
       </label>
       <label className="field">
-        买家发来的照片
-        <input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple />
+        买家发来的照片或视频
+        <input type="file" name="photos" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime" multiple />
+        <span className="muted small">视频会用 ffmpeg 抽帧后分析，单个不超过 40MB。</span>
       </label>
       <label className="field">
         聊天截图或收据

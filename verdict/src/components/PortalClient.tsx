@@ -42,6 +42,12 @@ export function PortalClient({ token }: { token: string }) {
   useEffect(() => {
     void load().then((d) => {
       if (d?.claim.lockedType) setClaimType(d.claim.type);
+      // 买家中途刷新或重新打开链接时，已经上传过的镜头直接显示为完成，不用重拍。
+      if (d?.uploaded.length) {
+        const restored: Record<string, 'live' | 'album'> = {};
+        for (const u of d.uploaded) if (u.shot) restored[u.shot] = u.source === 'live_capture' ? 'live' : 'album';
+        setDone((cur) => ({ ...restored, ...cur }));
+      }
     });
   }, [load]);
 
@@ -154,14 +160,14 @@ export function PortalClient({ token }: { token: string }) {
           <>
             <h1>拍摄照片</h1>
             <p className="muted" style={{ marginBottom: 10 }}>
-              请用手机现场拍摄。每个镜头都有一个随机码，把它写在纸上放进画面，这样可以更快确认情况。
+              请用手机现场拍摄。每个镜头都有一个随机码，把它写在纸上放进画面，这样可以更快确认情况。也可以录一段 15 秒以内的短视频。
             </p>
             {shots.map((s) => (
               <div className="shot-row" key={s.id}>
                 <span className={`shot-state ${done[s.id] ? 'done' : ''}`}>{done[s.id] ? '✓' : ''}</span>
                 <div style={{ flex: 1 }}>
                   <strong>{s.label}</strong>
-                  <div className="muted small">{done[s.id] === 'album' ? '已从相册上传' : s.hint}</div>
+                  <div className="muted small">{done[s.id] === 'album' ? '已从相册上传' : done[s.id] === 'live' ? '已现场拍摄' : s.hint}</div>
                 </div>
                 <button className="btn" onClick={() => setActiveShot(s)}>
                   {done[s.id] ? '重拍' : '开始'}
@@ -198,9 +204,9 @@ export function PortalClient({ token }: { token: string }) {
               <textarea rows={5} value={narrative} onChange={(e) => setNarrative(e.target.value)} placeholder="例如：收到时外箱一角压坏，杯身有裂纹。" />
             </label>
             <div className="order-box small">
-              <strong>你的照片会如何处理</strong>
+              <strong>你的照片和视频会如何处理</strong>
               <div className="muted" style={{ marginTop: 4 }}>
-                照片和说明会由商家及 Verdict 核验系统处理，用于判断售后申请。
+                照片、视频和说明会由商家及 Verdict 核验系统处理，用于判断售后申请。
                 {data.processors.length > 0
                   ? ` 以下第三方也会处理这些内容：${data.processors.join('、')}。`
                   : ' 当前没有发送给任何第三方服务。'}
@@ -266,6 +272,31 @@ function isBlankFrame(video: HTMLVideoElement): boolean {
   return squares / n - mean * mean < 16;
 }
 
+/** 索赔页录的短视频上限。 */
+const MAX_RECORD_MS = 15_000;
+
+/** 把视频当前画面缩成宽度不超过 maxWidth 的 JPEG data URL。 */
+function snapshot(video: HTMLVideoElement, maxWidth: number): string | undefined {
+  if (!video.videoWidth) return undefined;
+  const scale = Math.min(1, maxWidth / video.videoWidth);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(video.videoWidth * scale);
+  canvas.height = Math.round(video.videoHeight * scale);
+  canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.8);
+}
+
+/** 优先 MP4（Safari 和较新的 Chrome 支持，控制台各浏览器都能播），否则 WebM。 */
+function recorderMime(): string | undefined {
+  if (typeof MediaRecorder === 'undefined') return undefined;
+  return ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t));
+}
+
+function fileName(blob: Blob): string {
+  if (blob.type.startsWith('video/')) return blob.type.includes('mp4') ? 'capture.mp4' : blob.type.includes('quicktime') ? 'capture.mov' : 'capture.webm';
+  return 'capture.jpg';
+}
+
 function CameraCapture({
   token,
   shot,
@@ -282,13 +313,34 @@ function CameraCapture({
   const startedAt = useRef(Date.now());
   const [challenge, setChallenge] = useState<{ challengeId: string; code: string; action: string } | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{ url: string; blob: Blob } | null>(null);
+  const [preview, setPreview] = useState<{ url: string; blob: Blob; kind: 'image' | 'video'; poster?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<'photo' | 'video'>('photo');
+  const [recordingMs, setRecordingMs] = useState<number | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const canRecord = typeof window !== 'undefined' && typeof MediaRecorder !== 'undefined';
 
   const stopStream = useCallback(() => {
+    if (tickRef.current) clearInterval(tickRef.current);
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.onstop = null;
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+  }, []);
+
+  // 预览照片或视频时实时画面的 <video> 会被卸载，点“重拍/重录”后是一个新元素，要把摄像头流重新接上，否则画面全黑、快门无效。
+  const attachVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    if (el && streamRef.current && el.srcObject !== streamRef.current) {
+      el.srcObject = streamRef.current;
+      void el.play().catch(() => undefined);
+    }
   }, []);
 
   const startCamera = useCallback(async () => {
@@ -350,18 +402,61 @@ function CameraCapture({
     canvas.getContext('2d')!.drawImage(video, 0, 0);
     canvas.toBlob(
       (blob) => {
-        if (blob) setPreview({ url: URL.createObjectURL(blob), blob });
+        if (blob) setPreview({ url: URL.createObjectURL(blob), blob, kind: 'image' });
       },
       'image/jpeg',
       0.95,
     );
   }
 
+  function startRecording() {
+    const stream = streamRef.current;
+    if (!stream || !videoRef.current?.videoWidth) return;
+    if (isBlankFrame(videoRef.current)) {
+      setError('画面几乎是纯色，可能是镜头还没准备好。请稍等一下再录。');
+      return;
+    }
+    setError(null);
+    const mimeType = recorderMime();
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 2_500_000 } : undefined);
+    } catch {
+      setError('这个浏览器不能录视频，请改用拍照。');
+      return;
+    }
+    chunksRef.current = [];
+    // 开录时的画面当预览封面。MediaRecorder 录的文件常常不写时长，有的浏览器在播放前只显示黑屏。
+    const poster = snapshot(videoRef.current, 640);
+    recorder.ondataavailable = (e) => {
+      if (e.data.size) chunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => {
+      if (tickRef.current) clearInterval(tickRef.current);
+      setRecordingMs(null);
+      const blob = new Blob(chunksRef.current, { type: (recorder.mimeType || 'video/webm').split(';')[0] });
+      if (blob.size) setPreview({ url: URL.createObjectURL(blob), blob, kind: 'video', poster });
+    };
+    recorderRef.current = recorder;
+    const begin = Date.now();
+    recorder.start(500);
+    setRecordingMs(0);
+    tickRef.current = setInterval(() => {
+      const ms = Date.now() - begin;
+      setRecordingMs(ms);
+      if (ms >= MAX_RECORD_MS && recorder.state === 'recording') recorder.stop();
+    }, 250);
+  }
+
+  function stopRecording() {
+    if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
+  }
+
   async function upload(file: Blob, withChallenge: boolean) {
     setBusy(true);
     setError(null);
     const form = new FormData();
-    form.append('file', file, 'capture.jpg');
+    form.append('file', file, fileName(file));
     form.append('shot', shot.id);
     if (withChallenge && challenge) {
       form.append('challengeId', challenge.challengeId);
@@ -399,11 +494,14 @@ function CameraCapture({
       </div>
 
       <div className="camera-view">
-        {preview ? (
+        {preview?.kind === 'video' ? (
+          // key 不同，React 才不会复用实时画面那个 <video>：复用时 srcObject（摄像头流）还挂着，会盖过录好的视频。
+          <video key="recorded" src={preview.url} poster={preview.poster} controls playsInline preload="auto" />
+        ) : preview ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={preview.url} alt="拍摄预览" />
         ) : (
-          <video ref={videoRef} playsInline muted autoPlay />
+          <video key="live" ref={attachVideo} playsInline muted autoPlay />
         )}
         {cameraError && !preview && (
           <div style={{ position: 'absolute', padding: 24, textAlign: 'center' }}>
@@ -417,20 +515,41 @@ function CameraCapture({
         {preview ? (
           <div className="row" style={{ flexWrap: 'nowrap' }}>
             <button className="btn" style={{ flex: 1 }} disabled={busy} onClick={() => setPreview(null)}>
-              重拍
+              {preview.kind === 'video' ? '重录' : '重拍'}
             </button>
             <button className="btn btn-primary" style={{ flex: 1 }} disabled={busy} onClick={() => upload(preview.blob, true)}>
-              {busy ? '上传中…' : '使用这张'}
+              {busy ? (preview.kind === 'video' ? '上传并处理中…' : '上传中…') : preview.kind === 'video' ? '使用这段' : '使用这张'}
             </button>
           </div>
         ) : (
           <>
-            {!cameraError && <button className="shutter" aria-label="拍照" onClick={capture} disabled={!challenge} />}
+            {!cameraError && canRecord && recordingMs === null && (
+              <div className="capture-modes" role="group" aria-label="拍摄方式">
+                <button aria-pressed={mode === 'photo'} onClick={() => setMode('photo')}>
+                  拍照
+                </button>
+                <button aria-pressed={mode === 'video'} onClick={() => setMode('video')}>
+                  录视频
+                </button>
+              </div>
+            )}
+            {!cameraError && mode === 'photo' && <button className="shutter" aria-label="拍照" onClick={capture} disabled={!challenge} />}
+            {!cameraError && mode === 'video' && recordingMs === null && (
+              <button className="shutter rec" aria-label="开始录制" onClick={startRecording} disabled={!challenge} />
+            )}
+            {recordingMs !== null && (
+              <>
+                <button className="shutter recording" aria-label="停止录制" onClick={stopRecording} />
+                <div className="rec-time" aria-live="polite">
+                  录制中 {Math.floor(recordingMs / 1000)} / {MAX_RECORD_MS / 1000} 秒，点方块停止
+                </div>
+              </>
+            )}
             <label style={{ textAlign: 'center', fontSize: 13, cursor: 'pointer', textDecoration: 'underline', opacity: 0.9 }}>
               无法现场拍摄？从相册选择
               <input
                 type="file"
-                accept="image/jpeg,image/png,image/webp"
+                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
                 style={{ display: 'none' }}
                 onChange={(e) => {
                   const f = e.target.files?.[0];

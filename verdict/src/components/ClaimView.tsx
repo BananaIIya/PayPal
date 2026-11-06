@@ -425,6 +425,24 @@ function ReuseComparison({ raw }: { raw: unknown }) {
   );
 }
 
+/** 视频的第一帧，用作缩略图和播放器封面。 */
+function framesOf(all: PublicEvidence[], videoId: string): PublicEvidence[] {
+  return all.filter((e) => e.kind === 'frame' && e.parentId === videoId).sort((a, b) => frameAt(a) - frameAt(b));
+}
+const frameAt = (e: PublicEvidence) => Number(e.captureMeta?.atMs ?? 0);
+const fileUrl = (id: string) => `/api/evidence/${id}/file`;
+const secondsText = (ms: number) => `${(ms / 1000).toFixed(1)} 秒`;
+
+interface VideoInfoView {
+  frameExtraction: string;
+  reason: string | null;
+  durationMs: number | null;
+  width: number | null;
+  height: number | null;
+  frames: number;
+  sceneCutsMs: number[];
+}
+
 function Gallery({
   evidence,
   references,
@@ -446,6 +464,11 @@ function Gallery({
       </section>
     );
   }
+  // 抽出来的帧不单独占缩略图位置，挂在所属视频下面。
+  const top = evidence.filter((e) => e.kind !== 'frame');
+  const video = selected?.kind === 'video' ? selected : selected?.kind === 'frame' ? (evidence.find((e) => e.id === selected.parentId) ?? null) : null;
+  const frames = video ? framesOf(evidence, video.id) : [];
+  const info = (video?.captureMeta?.video ?? null) as VideoInfoView | null;
   const box = highlight && selected && highlight.evidenceId === selected.id ? highlight.bbox : null;
   return (
     <section className="card card-pad">
@@ -453,8 +476,17 @@ function Gallery({
       {selected && (
         <div className="gallery-main">
           <div className="gallery-frame">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={`/api/evidence/${selected.id}/file`} alt={SHOT_LABEL[selected.shotLabel ?? ''] ?? '证据图片'} />
+            {selected.kind === 'video' ? (
+              selected.purgedAt ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={fileUrl(selected.id)} alt="原件已删除" />
+              ) : (
+                <video key={selected.id} src={fileUrl(selected.id)} poster={frames[0] ? fileUrl(frames[0].id) : undefined} controls playsInline preload="metadata" />
+              )
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={fileUrl(selected.id)} alt={SHOT_LABEL[selected.shotLabel ?? ''] ?? '证据图片'} />
+            )}
             {box && (
               <div
                 className="bbox"
@@ -464,8 +496,32 @@ function Gallery({
           </div>
         </div>
       )}
-      {evidence.length > 0 && <Thumbs title={`买家证据（${evidence.length}）`} items={evidence} selected={selected} onSelect={onSelect} />}
-      {references.length > 0 && <Thumbs title={`商家留底（${references.length}）`} items={references} selected={selected} onSelect={onSelect} />}
+      {video && frames.length > 0 && (
+        <>
+          <div className="muted small" style={{ marginTop: 10 }}>
+            抽出的帧（{frames.length}）：按固定间隔加场景切换抽取，其余分析器看的是这些帧
+          </div>
+          <div className="thumbs" style={{ marginTop: 4 }}>
+            <button className="thumb" aria-pressed={selected?.id === video.id} onClick={() => onSelect(video.id)}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={fileUrl(frames[0].id)} alt="" loading="lazy" />
+              <span className="thumb-label">▶ 播放视频</span>
+            </button>
+            {frames.map((f) => (
+              <button key={f.id} className="thumb" aria-pressed={selected?.id === f.id} onClick={() => onSelect(f.id)}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={fileUrl(f.id)} alt="" loading="lazy" />
+                <span className="thumb-label">
+                  {secondsText(frameAt(f))}
+                  {f.captureMeta?.reason === 'scene' ? ' · 切换' : ''}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      {top.length > 0 && <Thumbs title={`买家证据（${top.length}）`} items={top} all={evidence} selected={video ?? selected} onSelect={onSelect} />}
+      {references.length > 0 && <Thumbs title={`商家留底（${references.length}）`} items={references} all={references} selected={selected} onSelect={onSelect} />}
       {selected && (
         <dl className="meta-grid">
           <div>
@@ -482,6 +538,26 @@ function Gallery({
             <dt>上传时间</dt>
             <dd>{fmtDateTime(selected.createdAt)}</dd>
           </div>
+          {selected.kind === 'frame' && (
+            <div>
+              <dt>视频帧</dt>
+              <dd>
+                第 {secondsText(frameAt(selected))}
+                {selected.captureMeta?.reason === 'scene' ? '（场景切换）' : '（固定间隔）'}
+              </dd>
+            </div>
+          )}
+          {info && (
+            <div>
+              <dt>视频</dt>
+              <dd>
+                {info.durationMs ? secondsText(info.durationMs) : '时长未知'}
+                {info.width && info.height ? ` · ${info.width}×${info.height}` : ''}
+                {info.frameExtraction === 'ok' ? ` · 抽帧 ${info.frames} 张` : ` · 没有抽帧：${info.reason ?? '原因未知'}`}
+                {info.sceneCutsMs.length > 0 ? ` · 场景切换 ${info.sceneCutsMs.map(secondsText).join('、')}` : ''}
+              </dd>
+            </div>
+          )}
           {selected.purgedAt && (
             <div>
               <dt>原件</dt>
@@ -517,11 +593,13 @@ function Gallery({
 function Thumbs({
   title,
   items,
+  all,
   selected,
   onSelect,
 }: {
   title: string;
   items: PublicEvidence[];
+  all: PublicEvidence[];
   selected: PublicEvidence | null;
   onSelect: (id: string) => void;
 }) {
@@ -531,14 +609,24 @@ function Thumbs({
         {title}
       </div>
       <div className="thumbs" style={{ marginTop: 4 }}>
-        {items.map((e) => (
-          <button key={e.id} className="thumb" aria-pressed={selected?.id === e.id} onClick={() => onSelect(e.id)}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={`/api/evidence/${e.id}/file`} alt="" loading="lazy" />
-            <span className={`tier tier-${e.layer}`}>{e.layer}</span>
-            <span className="thumb-label">{SHOT_LABEL[e.shotLabel ?? ''] ?? e.shotLabel ?? '未标注'}</span>
-          </button>
-        ))}
+        {items.map((e) => {
+          const cover = e.kind === 'video' ? framesOf(all, e.id)[0] : e;
+          return (
+            <button key={e.id} className="thumb" aria-pressed={selected?.id === e.id} onClick={() => onSelect(e.id)}>
+              {cover ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={fileUrl(cover.id)} alt="" loading="lazy" />
+              ) : (
+                <span className="thumb-video">视频</span>
+              )}
+              <span className={`tier tier-${e.layer}`}>{e.layer}</span>
+              <span className="thumb-label">
+                {e.kind === 'video' ? '▶ ' : ''}
+                {SHOT_LABEL[e.shotLabel ?? ''] ?? e.shotLabel ?? '未标注'}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </>
   );

@@ -6,6 +6,15 @@ import sharp from 'sharp';
 import { dataDir } from './db';
 
 export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+/** 索赔页录的短视频最长 15 秒，相册里的视频可能更长，留足余量。 */
+export const MAX_VIDEO_BYTES = 40 * 1024 * 1024;
+/** 一次上传请求的上限，要和 next.config.ts 的 proxyClientMaxBodySize 一致：超过的部分会被 proxy 截断。 */
+export const MAX_REQUEST_BYTES = 48 * 1024 * 1024;
+
+/** 先看 Content-Length，超限时直接给出清楚的错误，而不是解析一个被截断的表单。 */
+export function requestTooLarge(req: Request): boolean {
+  return Number(req.headers.get('content-length') ?? 0) > MAX_REQUEST_BYTES;
+}
 
 export function sha256(buf: Uint8Array): string {
   return crypto.createHash('sha256').update(buf).digest('hex');
@@ -36,6 +45,23 @@ export function sniffImageType(buf: Buffer): 'image/jpeg' | 'image/png' | 'image
     return 'image/png';
   if (buf.length > 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP')
     return 'image/webp';
+  return null;
+}
+
+export type VideoMime = 'video/mp4' | 'video/webm' | 'video/quicktime';
+
+/** 视频同样按文件头判断：WebM（MediaRecorder 在 Chrome、安卓上的输出）和 MP4/MOV（iPhone）。 */
+export function sniffVideoType(buf: Buffer): VideoMime | null {
+  if (buf.length > 40 && buf.readUInt32BE(0) === 0x1a45dfa3) {
+    // EBML 头里的 DocType：只接受 webm，Matroska（.mkv）浏览器播不了。
+    return buf.subarray(0, 64).includes('webm') ? 'video/webm' : null;
+  }
+  if (buf.length > 12 && buf.toString('latin1', 4, 8) === 'ftyp') {
+    const brand = buf.toString('latin1', 8, 12);
+    // HEIC、AVIF 也是 ftyp 容器，但它们是图片。
+    if (['heic', 'heix', 'hevc', 'mif1', 'msf1', 'avif', 'avis'].includes(brand)) return null;
+    return brand === 'qt  ' ? 'video/quicktime' : 'video/mp4';
+  }
   return null;
 }
 

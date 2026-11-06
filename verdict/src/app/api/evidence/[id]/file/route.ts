@@ -36,11 +36,27 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   } catch {
     return placeholder('原件文件不存在');
   }
-  return new NextResponse(new Uint8Array(data), {
-    headers: {
-      'Content-Type': row.mime_type,
-      'X-Content-Type-Options': 'nosniff',
-      'Cache-Control': 'private, max-age=3600, immutable',
-    },
+  const headers: Record<string, string> = {
+    'Content-Type': row.mime_type,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=3600, immutable',
+  };
+  if (!row.mime_type.startsWith('video/')) return new NextResponse(new Uint8Array(data), { headers });
+
+  // Safari 播放视频必须支持分段请求。只处理单个区间，其他情况返回整个文件。
+  headers['Accept-Ranges'] = 'bytes';
+  const range = req.headers.get('range')?.match(/^bytes=(\d*)-(\d*)$/);
+  if (!range || (range[1] === '' && range[2] === '')) return new NextResponse(new Uint8Array(data), { headers });
+  const size = data.length;
+  let start = range[1] === '' ? size - Number(range[2]) : Number(range[1]);
+  let end = range[1] === '' || range[2] === '' ? size - 1 : Number(range[2]);
+  start = Math.max(0, start);
+  end = Math.min(size - 1, end);
+  if (start > end || start >= size) {
+    return new NextResponse(null, { status: 416, headers: { ...headers, 'Content-Range': `bytes */${size}` } });
+  }
+  return new NextResponse(new Uint8Array(data.subarray(start, end + 1)), {
+    status: 206,
+    headers: { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(end - start + 1) },
   });
 }

@@ -7,6 +7,7 @@ import type { TrackingProvider, TrackingResult } from '@/providers/types';
 import { ProviderUnavailable } from '@/providers/types';
 import { hammingDistance, isInformativeHash, readFile, REUSE_DISTANCE } from '@/server/storage';
 import { scanProvenance } from './provenance-scan';
+import { videoMeta } from './video-meta';
 
 export interface EvidenceRow {
   id: string;
@@ -22,6 +23,11 @@ export interface EvidenceRow {
   created_at: string;
   /** 原件按保留期删除的时间。删除后不能再读文件。 */
   purged_at?: string | null;
+  /** image、video，或从视频抽出的 frame。 */
+  kind?: string;
+  /** frame 来自哪段视频。 */
+  parent_id?: string | null;
+  capture_meta?: string | null;
 }
 
 export interface OrderItem {
@@ -158,6 +164,15 @@ const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase();
 const normText = (s: string) => s.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
 
 // ---------- Provenance ----------
+/**
+ * 常见的剪辑软件会把名字写进视频元数据。不含 ffmpeg（Lavf）：压缩转码也会用到它；
+ * 也不匹配单独的“Adobe”：很多手机写 XMP 时带着“Adobe XMP Core”。
+ */
+const EDIT_SOFTWARE_RE =
+  /(CapCut|剪映|Premiere|After Effects|Final ?Cut|iMovie|DaVinci|InShot|KineMaster|Filmora|VN Video|VivaCut|Videoleap|PowerDirector|Movavi|Shotcut|Clipchamp)/i;
+
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} 秒`;
+
 async function provenance(ctx: AnalyzerContext): Promise<AnalyzerResult> {
   const signals: SignalDraft[] = [];
   const clean: EvidenceRow[] = [];
@@ -188,6 +203,37 @@ async function provenance(ctx: AnalyzerContext): Promise<AnalyzerResult> {
       clean.push(row);
     }
   }
+  // 视频是否经过剪辑：元数据里的剪辑软件，以及现场录制中出现的画面突变。两者都只看文件本身，不需要模型。
+  for (const v of ctx.evidence.filter((e) => e.kind === 'video')) {
+    const meta = videoMeta(v.capture_meta);
+    if (!meta) continue;
+    const software = Object.values(meta.tags)
+      .map((t) => String(t).match(EDIT_SOFTWARE_RE)?.[1])
+      .find(Boolean);
+    if (software) {
+      signals.push(
+        signal('VIDEO_EDITED', 'contradicts_claim', 'moderate', 0.75, [v], null, `视频元数据显示经过剪辑软件处理（${software}）。`, {
+          raw: { tags: meta.tags },
+          provider: '本地解析（ffprobe）',
+        }),
+      );
+    }
+    if (v.source === 'live_capture' && meta.sceneCutsMs.length) {
+      signals.push(
+        signal(
+          'VIDEO_DISCONTINUITY',
+          'contradicts_claim',
+          'weak',
+          0.6,
+          [v],
+          null,
+          `现场录制的视频里有 ${meta.sceneCutsMs.length} 处画面突变（${meta.sceneCutsMs.map(seconds).join('、')}），连续录制一般不会出现。镜头快速移动、遮挡或光线突变也会造成这种情况。`,
+          { raw: { sceneCutsMs: meta.sceneCutsMs }, provider: '本地解析（ffmpeg）' },
+        ),
+      );
+    }
+  }
+
   if (clean.length) {
     signals.push(
       signal('NO_PROVENANCE', 'neutral', 'weak', 1, clean, null, `${clean.length} 份证据未发现来源凭证。未检出不等于真实，只代表缺少这一信号。`, {
@@ -195,7 +241,7 @@ async function provenance(ctx: AnalyzerContext): Promise<AnalyzerResult> {
       }),
     );
   }
-  return { status: 'done', signals, note: '仅解析 C2PA 与隐式标识是否存在，未校验签名；SynthID 未接入' };
+  return { status: 'done', signals, note: '仅解析 C2PA 与隐式标识是否存在，未校验签名；SynthID 未接入。视频另查元数据里的剪辑软件和现场录制中的画面突变' };
 }
 
 // ---------- Synthetic ----------
@@ -274,9 +320,21 @@ async function origin(ctx: AnalyzerContext): Promise<AnalyzerResult> {
 const UNOPENED_RE = /未拆封|没拆|没有拆|没打开|没有打开|还没开箱|未开封|未开箱|unopened|sealed/i;
 
 async function consistency(ctx: AnalyzerContext): Promise<AnalyzerResult> {
-  const items = await attributesFor(ctx.evidence, ctx);
+  // 视频本身不送进属性提取（多模态模型看的是图片），画面比对用它抽出来的帧。
+  const videos = ctx.evidence.filter((e) => e.kind === 'video');
+  const unframed = videos.filter((v) => videoMeta(v.capture_meta)?.frameExtraction !== 'ok');
+  if (unframed.length) {
+    const reason = videoMeta(unframed[0].capture_meta)?.reason ?? '原因未知';
+    return { status: 'unavailable', reason: `${unframed.length} 段视频没有抽帧（${reason}），无法逐帧比对；处理好后重新分析` };
+  }
+  const items = await attributesFor(
+    ctx.evidence.filter((e) => e.kind !== 'video'),
+    ctx,
+  );
   const provider = providerLabel(items);
   const signals: SignalDraft[] = [];
+  const frames = items.filter((i) => i.row.kind === 'frame' && i.row.parent_id);
+  const framesOf = (videoId: string) => frames.filter((f) => f.row.parent_id === videoId);
 
   const withSerial = items.filter((i) => i.attrs.serialNumber);
   const serials = new Set(withSerial.map((i) => normalizeSerial(i.attrs.serialNumber!)));
@@ -295,10 +353,16 @@ async function consistency(ctx: AnalyzerContext): Promise<AnalyzerResult> {
     );
   }
 
-  // 近景天然只拍一部分，物体数量只在整体镜头之间比较。
-  const countable = items.filter(
-    (i) => i.attrs.objectCount !== null && ['overall', 'contents'].includes(i.row.shot_label ?? ''),
-  );
+  // 近景天然只拍一部分，物体数量只在整体镜头之间比较。同一段视频的帧只取数量最多的一帧：
+  // 镜头移动时有的帧拍不全，这不算矛盾。
+  const isCountable = (i: (typeof items)[number]) => i.attrs.objectCount !== null && ['overall', 'contents'].includes(i.row.shot_label ?? '');
+  const countable = [
+    ...items.filter((i) => i.row.kind !== 'frame' && isCountable(i)),
+    ...videos.flatMap((v) => {
+      const counted = framesOf(v.id).filter(isCountable);
+      return counted.length ? [counted.reduce((a, b) => (b.attrs.objectCount! > a.attrs.objectCount! ? b : a))] : [];
+    }),
+  ];
   const counts = new Set(countable.map((i) => i.attrs.objectCount));
   if (counts.size > 1) {
     signals.push(
@@ -334,9 +398,25 @@ async function consistency(ctx: AnalyzerContext): Promise<AnalyzerResult> {
     }
   }
 
-  // 挑战码：现场拍摄的镜头都应能在画面中读到。
+  // 挑战码：现场拍摄的镜头都应能在画面中读到。视频只要有一帧读到正确的码就算通过。
+  for (const v of videos) {
+    const challenge = v.challenge_id ? ctx.challenges.get(v.challenge_id) : undefined;
+    if (!challenge) continue;
+    const seen = framesOf(v.id).filter((f) => f.attrs.challengeCodeSeen);
+    if (seen.some((f) => norm(f.attrs.challengeCodeSeen) === norm(challenge.code))) continue;
+    if (seen.length) {
+      signals.push(
+        signal('CHALLENGE_MISMATCH', 'contradicts_claim', 'moderate', 0.85, [seen[0].row], null, `视频画面中的码 ${seen[0].attrs.challengeCodeSeen} 与下发的挑战码 ${challenge.code} 不一致。`, { provider }),
+      );
+    } else {
+      signals.push(
+        signal('CHALLENGE_MISSING', 'contradicts_claim', 'weak', 0.7, [v], null, `视频抽出的 ${framesOf(v.id).length} 帧里都没有识别到下发的挑战码 ${challenge.code}。也可能只是纸条被遮挡或拍得不清楚。`, { provider }),
+      );
+    }
+  }
+
   for (const { row, attrs } of items) {
-    if (!row.challenge_id) continue;
+    if (!row.challenge_id || row.kind === 'frame') continue;
     const challenge = ctx.challenges.get(row.challenge_id);
     if (!challenge) continue;
     if (!attrs.challengeCodeSeen) {

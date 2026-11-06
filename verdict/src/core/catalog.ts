@@ -359,6 +359,8 @@ export const SIGNAL_TITLE: Record<string, string> = {
   SCRIPTED_NARRATIVE: '索赔文本与其他索赔高度相似',
   SKU_CLAIM_CLUSTER: '同 SKU 同理由索赔聚集',
   LINKED_ACCOUNTS: '存在共用收货地址的账户',
+  VIDEO_EDITED: '视频经过剪辑软件处理',
+  VIDEO_DISCONTINUITY: '现场录制的视频中有画面突变',
 };
 
 /** 每个强信号附上的常见正常解释（开发文档“处置约束”）。 */
@@ -381,12 +383,14 @@ export const NORMAL_EXPLANATIONS: Record<string, string[]> = {
   WEIGHT_MISMATCH: ['包装材料和称重误差会造成差异', '发货后也可能在运输途中丢失内件'],
   HIGH_CLAIM_FREQUENCY: ['批量采购的买家售后次数自然更多'],
   LINKED_ACCOUNTS: ['家庭、宿舍、公司集中收货属正常情况，只作线索'],
+  VIDEO_EDITED: ['视频剪辑可能是为了保护隐私或压缩文件', '一些手机相册的导出、压缩功能也会写入软件名'],
+  VIDEO_DISCONTINUITY: ['镜头快速移动、遮挡或光线突变也会被识别为画面切换', '请对照抽出的帧确认前后是否是同一件商品'],
 };
 
 export const STRENGTH_LABEL: Record<Strength, string> = { strong: '强', moderate: '中', weak: '弱' };
 
 export const ANALYZER_LABEL: Record<AnalyzerName, { name: string; what: string }> = {
-  provenance: { name: 'Provenance', what: '内容凭证与 AI 标识' },
+  provenance: { name: 'Provenance', what: '内容凭证、AI 标识与视频剪辑痕迹' },
   synthetic: { name: 'Synthetic', what: 'AI 生成检测器' },
   origin: { name: 'Origin', what: '历史证据与反向搜图' },
   consistency: { name: 'Consistency', what: '跨证据与陈述比对' },

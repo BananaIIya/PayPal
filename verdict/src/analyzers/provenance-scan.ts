@@ -54,6 +54,29 @@ function webpChunks(buf: Buffer): { type: string; data: Buffer }[] {
   return chunks;
 }
 
+/** C2PA 规范里 BMFF（MP4/MOV）用来放清单的 uuid 盒子。 */
+const C2PA_BMFF_UUID = Buffer.from('d8fec3d61b0e483c92975828877ec481', 'hex');
+
+function bmffBoxes(buf: Buffer): { type: string; data: Buffer }[] {
+  const boxes: { type: string; data: Buffer }[] = [];
+  let p = 0;
+  while (p + 8 <= buf.length) {
+    let size = buf.readUInt32BE(p);
+    const type = buf.toString('latin1', p + 4, p + 8);
+    let header = 8;
+    if (size === 1 && p + 16 <= buf.length) {
+      size = Number(buf.readBigUInt64BE(p + 8));
+      header = 16;
+    } else if (size === 0) {
+      size = buf.length - p;
+    }
+    if (size < header || p + size > buf.length) break;
+    boxes.push({ type, data: buf.subarray(p + header, p + size) });
+    p += size;
+  }
+  return boxes;
+}
+
 export function scanProvenance(buf: Buffer, mime: string): ProvenanceScan {
   const manifests: Buffer[] = [];
   const metadata: Buffer[] = [];
@@ -77,6 +100,19 @@ export function scanProvenance(buf: Buffer, mime: string): ProvenanceScan {
         metadata.push(c.data);
       }
     }
+  } else if (mime === 'video/mp4' || mime === 'video/quicktime') {
+    for (const box of bmffBoxes(buf)) {
+      if (box.type === 'uuid' && box.data.subarray(0, 16).equals(C2PA_BMFF_UUID)) {
+        manifests.push(box.data.subarray(16));
+        if (!containers.includes('BMFF uuid')) containers.push('BMFF uuid');
+      } else if (box.type === 'moov' || box.type === 'meta' || box.type === 'udta') {
+        // 元数据（XMP、软件名、AIGC 标识）在 moov 的 udta/meta 里；样本表也在 moov 里，但只做文本匹配不影响结果。
+        metadata.push(box.data);
+      }
+    }
+  } else if (mime === 'video/webm') {
+    // WebM 没有标准的 C2PA 容器。标签（Tags）一般在开头，也可能在末尾，只看两端。
+    metadata.push(buf.subarray(0, 2 * 1024 * 1024), buf.subarray(Math.max(0, buf.length - 1024 * 1024)));
   } else if (mime === 'image/webp') {
     for (const c of webpChunks(buf)) {
       if (c.type === 'C2PA') {

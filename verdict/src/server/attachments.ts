@@ -13,16 +13,36 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const PASS_THROUGH: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif' };
 
-/** 被“反驳索赔”的信号引用过的证据。 */
+/**
+ * 被“反驳索赔”的信号引用过的证据。PayPal 不收视频文件，被引用的视频换成它的第一帧；
+ * 同一张图只附一次。
+ */
 export function selectAttachmentEvidence(claimId: string): EvidenceRow[] {
   const cited = new Set(
     claimSignals(claimId)
       .filter((s) => s.direction === 'contradicts_claim')
       .flatMap((s) => s.evidenceIds),
   );
-  return claimEvidence(claimId)
-    .filter((e) => cited.has(e.id))
-    .slice(0, MAX_FILES);
+  const rows = claimEvidence(claimId);
+  const firstFrame = (videoId: string) =>
+    rows
+      .filter((r) => r.kind === 'frame' && r.parent_id === videoId)
+      .sort((a, b) => frameTime(a) - frameTime(b))[0];
+  const picked = new Map<string, EvidenceRow>();
+  for (const row of rows) {
+    if (!cited.has(row.id)) continue;
+    const file = row.kind === 'video' ? firstFrame(row.id) : row;
+    if (file) picked.set(file.id, file);
+  }
+  return [...picked.values()].slice(0, MAX_FILES);
+}
+
+function frameTime(row: EvidenceRow): number {
+  try {
+    return Number((JSON.parse(row.capture_meta ?? '{}') as { atMs?: number }).atMs ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 async function toPayPalFile(row: EvidenceRow, index: number): Promise<PayPalDocument | null> {

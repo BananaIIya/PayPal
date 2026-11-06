@@ -13,6 +13,11 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['sharp', 'pdfkit'],
   devIndicators: false,
   allowedDevOrigins: lanAddresses(),
+  experimental: {
+    // proxy.ts 会把请求体缓存在内存里，默认只缓存 10MB，超出部分被截断。
+    // 证据上传的上限是图片 15MB、视频 40MB，这里要大于它们加上表单开销。
+    proxyClientMaxBodySize: '48mb',
+  },
   async headers() {
     return [
       {

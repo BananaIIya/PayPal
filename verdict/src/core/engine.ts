@@ -126,7 +126,8 @@ function buildFindings(signals: Signal[], input: EngineInput): Finding[] {
       contribution: round(signalContribution(s, input.config)),
       evidenceIds: s.evidenceIds,
       region: s.region,
-      normalExplanations: s.strength === 'strong' || MEDIUM_FLOOR_CODES.has(s.code) || s.code === 'DELIVERED_CONFIRMED'
+      // 文档要求强信号附正常解释；中等强度、目录里写了正常解释的（如视频剪辑）也附上，多一层提醒。
+      normalExplanations: s.strength !== 'weak' || MEDIUM_FLOOR_CODES.has(s.code) || s.code === 'DELIVERED_CONFIRMED'
         ? (NORMAL_EXPLANATIONS[s.code] ?? [])
         : [],
       provider: s.provider,
