@@ -14,6 +14,7 @@
     "start": "next start -H 127.0.0.1 -p 3000",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "eval": "node scripts/eval.mjs",
     "reset": "rm -rf .data && echo '已清空 .data，下次启动会重新生成演示数据'",
     "account-link": "node scripts/account-link.mjs"
   },

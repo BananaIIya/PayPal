@@ -10,7 +10,7 @@ import { db, newId } from '@/server/db';
 import { createClaim } from '@/server/ingest';
 import { runAnalysis } from '@/server/pipeline';
 import { addEvidence, addTimeline, type ScenarioMeta } from '@/server/repo';
-import { sha256 } from '@/server/storage';
+import { sha256, sniffImageType } from '@/server/storage';
 import { injectSimulatedC2PA, recompress, renderScene, type Scene } from './images';
 
 const MERCHANT_ID = 'demo-merchant';
@@ -478,8 +478,21 @@ function insertOrder(spec: {
   return { id, orderNo, captureId, zip: LOCAL_ZIP };
 }
 
-export async function seedDemo(): Promise<void> {
+export interface SeedOptions {
+  /** 评估用：对每张买家证据做形式变换（压缩、裁剪等），留底不变。录制回放按变换后的文件登记，模拟内容不变时模型给出同样的结果。 */
+  transform?: (buf: Buffer) => Promise<Buffer>;
+}
+
+export interface SeededClaim {
+  key: string;
+  claimId: string;
+  /** 这笔索赔跑一遍核验管线的耗时（不含生成演示图片）。 */
+  analysisMs: number;
+}
+
+export async function seedDemo(opts: SeedOptions = {}): Promise<SeededClaim[]> {
   const conn = db();
+  const seeded: SeededClaim[] = [];
   conn.prepare('INSERT OR REPLACE INTO merchants (id, name, settings) VALUES (?, ?, ?)').run(MERCHANT_ID, 'Verdict 演示店', '{}');
   seedPolicies();
   orderCounter = 1000;
@@ -495,6 +508,7 @@ export async function seedDemo(): Promise<void> {
       if (spec.c2pa) buf = injectSimulatedC2PA(buf);
     }
     if (spec.name) named.set(spec.name, buf);
+    if (claimId && opts.transform) buf = await opts.transform(buf);
     if (!spec.unrecorded) {
       const hash = sha256(buf);
       cachePut('vision', hash, RECORDED, A({ ...spec.attrs, challengeCodeSeen: challengeCode ?? null }));
@@ -508,7 +522,7 @@ export async function seedDemo(): Promise<void> {
       orderId,
       source: spec.source,
       file: buf,
-      mime: 'image/jpeg',
+      mime: sniffImageType(buf) ?? 'image/jpeg',
       shot: spec.shot,
       challengeId,
       captureMeta:
@@ -626,13 +640,16 @@ export async function seedDemo(): Promise<void> {
       addTimeline(claimId, 'evidence', '证据上传', ev.shot, at);
     }
 
+    const started = performance.now();
     await runAnalysis(claimId, { offline: true });
+    seeded.push({ key: s.key, claimId, analysisMs: performance.now() - started });
     addTimeline(claimId, 'analysis', '核验完成', undefined, new Date(new Date(claimAt).getTime() + 10 * 60_000).toISOString());
   }
+  return seeded;
 }
 
-/** 清空演示数据后重新生成。 */
-export async function resetDemo(): Promise<void> {
+/** 清空业务数据（账号、会话不动）。 */
+export function wipeData(): void {
   const conn = db();
   const tables = [
     'actions',
@@ -658,7 +675,12 @@ export async function resetDemo(): Promise<void> {
   conn.exec('PRAGMA foreign_keys = OFF');
   for (const t of tables) conn.exec(`DELETE FROM ${t}`);
   conn.exec('PRAGMA foreign_keys = ON');
-  await seedDemo();
+}
+
+/** 清空演示数据后重新生成。 */
+export async function resetDemo(opts: SeedOptions = {}): Promise<SeededClaim[]> {
+  wipeData();
+  return seedDemo(opts);
 }
 
 export const DEMO_MERCHANT_ID = MERCHANT_ID;
