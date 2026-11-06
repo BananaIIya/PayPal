@@ -111,7 +111,7 @@ export function OrderTools({
           {captureId ? (
             <>
               <p className="muted" style={{ marginBottom: 8 }}>
-                用付款的沙箱个人账户登录 PayPal 沙箱网站，找到这笔交易并报告问题。选“没收到货”或“与描述不符”，其他类型 Verdict 暂不处理。争议一般几分钟内会同步过来。
+                用付款的沙箱个人账户登录 PayPal 沙箱网站，找到这笔交易并报告问题。选“没收到货”或“与描述不符”，其他类型 Verdict 暂不处理。争议大约 3 分钟后才能回应，同步过来可能也要等这么久。
               </p>
               <p className="small">
                 PayPal 交易号：<span className="mono">{captureId}</span>

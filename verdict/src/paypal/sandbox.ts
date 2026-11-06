@@ -1,7 +1,7 @@
 // 真实的 PayPal 沙箱客户端。请求格式对照官方 Disputes、Payments、Orders、Webhooks 文档。
 // 接口地址写死，不提供环境变量覆盖：这个版本不可能连到正式环境，也就不可能动用真实资金。
-import type { ActionType, ReturnAckType } from '@/core/types';
-import { PayPalApiError, type DisputeView, type EvidenceInput, type PayPalClient, type PayPalDocument, type PayPalWriteResult } from './client';
+import type { ActionType, ReturnAckType, ReturnAddress } from '@/core/types';
+import { PayPalApiError, type DisputeView, type EvidenceInput, type OfferInput, type PayPalClient, type PayPalDocument, type PayPalWriteResult } from './client';
 import { paypalConfig } from './config';
 
 export const SANDBOX_API_BASE = 'https://api-m.sandbox.paypal.com';
@@ -15,6 +15,18 @@ const REQUIRED_SCOPES = [
   'https://uri.paypal.com/services/disputes/update-seller',
   'https://uri.paypal.com/services/payments/refund',
 ];
+
+/** PayPal 的 address_portable：admin_area_2 是城市，admin_area_1 是州或省。 */
+export function toPayPalAddress(a: ReturnAddress) {
+  return {
+    address_line_1: a.line1,
+    ...(a.line2 ? { address_line_2: a.line2 } : {}),
+    admin_area_2: a.city,
+    admin_area_1: a.state,
+    postal_code: a.postalCode,
+    country_code: a.countryCode,
+  };
+}
 
 export function formatAmount(amount: number, currency: string): string {
   return amount.toFixed(ZERO_DECIMAL_CURRENCIES.has(currency) ? 0 : 2);
@@ -46,6 +58,7 @@ interface RawDispute {
     items?: { item_id?: string; item_name?: string; item_quantity?: string }[];
   }[];
   messages?: { posted_by?: string; time_posted?: string; content?: string }[];
+  evidences?: { evidence_type?: string; source?: string }[];
   allowed_response_options?: {
     make_offer?: { offer_types?: string[] };
     accept_claim?: { accept_claim_types?: string[] };
@@ -57,6 +70,18 @@ export interface DisputeSummary {
   update_time?: string;
   reason?: string;
   status?: string;
+}
+
+/** PayPal 的原始描述往往只是“请求格式不对”，这里补上联调时确认过的真实原因。 */
+const ISSUE_EXPLAINED: Record<string, string> = {
+  EVIDENCE_TYPE_IS_NOT_ALLOWED:
+    '这个证据类型现在不能提交。沙箱里确认过的原因是同一类型已经提交过（比如 INQUIRY 阶段交过物流证据），换成 OTHER 并把物流单号写进说明即可。',
+};
+
+/** 非物流证据不带 tracking_info，物流单号写进说明，避免信息丢失。 */
+export function evidenceNotes(input: EvidenceInput): string {
+  if (!input.trackingNumber || input.evidenceType === 'PROOF_OF_FULFILLMENT' || input.notes.includes(input.trackingNumber)) return input.notes;
+  return `${input.notes}\n物流：${[input.carrier, input.trackingNumber].filter(Boolean).join(' ')}`;
 }
 
 function hasLink(links: RawLink[], segment: string): boolean {
@@ -109,6 +134,9 @@ export function toDisputeView(raw: RawDispute): DisputeView {
     item: item ? { id: item.item_id ?? null, title: item.item_name ?? null, quantity: Number(item.item_quantity) || 1 } : null,
     allowedActions: allowedFrom(raw),
     offerTypes: raw.allowed_response_options?.make_offer?.offer_types ?? [],
+    submittedEvidenceTypes: [
+      ...new Set((raw.evidences ?? []).filter((e) => e.source === 'SUBMITTED_BY_SELLER' && e.evidence_type).map((e) => e.evidence_type!)),
+    ],
     outcome: raw.dispute_outcome?.outcome_code ?? null,
     sandboxTools: { requireEvidence: hasLink(links, 'require-evidence'), adjudicate: hasLink(links, 'adjudicate') },
     log: [],
@@ -137,6 +165,12 @@ export interface CapturedPayPalOrder {
   buyerName: string | null;
   buyerEmail: string | null;
   address: { line1?: string; city?: string; postalCode?: string; country?: string } | null;
+}
+
+export interface PayPalCaptureState {
+  status: string;
+  reason: string | null;
+  sellerProtection: string | null;
 }
 
 export class PayPalSandbox implements PayPalClient {
@@ -249,7 +283,8 @@ export class PayPalSandbox implements PayPalClient {
     const issue = detail?.issue ?? parsed.name ?? null;
     const description = detail?.description ?? parsed.message ?? `HTTP ${status}`;
     const debug = parsed.debug_id ? `（debug_id ${parsed.debug_id}）` : '';
-    return new PayPalApiError(`PayPal 返回错误 ${issue ?? status}：${description}${debug}`, {
+    const explained = issue ? ISSUE_EXPLAINED[issue] : undefined;
+    return new PayPalApiError(`PayPal 返回错误 ${issue ?? status}：${explained ?? description}${debug}`, {
       status,
       issue,
       debugId: parsed.debug_id ?? null,
@@ -347,9 +382,10 @@ export class PayPalSandbox implements PayPalClient {
 
   /** appeal 和 provide-evidence 的请求体相同：input 部分是 evidences 数组，文件依次为 file1、file2。 */
   private async postEvidences(disputeId: string, segment: 'provide-evidence' | 'appeal', input: EvidenceInput, requestId: string) {
-    const evidence: Record<string, unknown> = { evidence_type: input.evidenceType, notes: input.notes };
+    const evidence: Record<string, unknown> = { evidence_type: input.evidenceType, notes: evidenceNotes(input) };
     if (input.documents.length) evidence.documents = input.documents.map((d) => ({ name: d.name }));
-    if (input.trackingNumber) {
+    // tracking_info 只属于物流证据。其他类型带上它没有依据，物流单号改写进说明。
+    if (input.trackingNumber && input.evidenceType === 'PROOF_OF_FULFILLMENT') {
       evidence.evidence_info = { tracking_info: [{ ...carrierFields(input.carrier), tracking_number: input.trackingNumber }] };
     }
     const form = multipart({ evidences: [evidence] }, input.documents);
@@ -381,24 +417,31 @@ export class PayPalSandbox implements PayPalClient {
     return this.postEvidences(disputeId, 'appeal', input, requestId);
   }
 
-  async makeOffer(disputeId: string, input: { amount: number; currency: string; note: string }, requestId: string) {
+  async makeOffer(disputeId: string, input: OfferInput, requestId: string) {
     const dispute = await this.getDispute(disputeId, { fresh: true });
     const types = dispute?.offerTypes ?? [];
-    // 和解金额是退款，不要求退货。PayPal 没给这个选项时不要猜，让商家去后台处理。
-    if (types.length > 0 && !types.includes('REFUND')) {
-      throw new PayPalApiError(`这笔争议只接受 ${types.join('、')} 类型的和解，Verdict 目前只支持 REFUND，请到 PayPal 后台处理。`);
+    const offerType = input.returnAddress ? 'REFUND_WITH_RETURN' : 'REFUND';
+    // PayPal 没给这个和解类型时不要猜，告诉商家这笔争议能用哪些。
+    if (types.length > 0 && !types.includes(offerType)) {
+      const hint = types.includes('REFUND_WITH_RETURN') ? '勾选“要求买家先退货”后再提交' : '请到 PayPal 后台处理';
+      throw new PayPalApiError(`这笔争议只接受 ${types.join('、')} 类型的和解，${hint}。`);
     }
     const op = `POST /v1/customer/disputes/${disputeId}/make-offer`;
     await this.request('POST', `/v1/customer/disputes/${encodeURIComponent(disputeId)}/make-offer`, {
       json: {
         note: input.note,
-        offer_type: 'REFUND',
+        offer_type: offerType,
         offer_amount: { currency_code: input.currency, value: formatAmount(input.amount, input.currency) },
+        ...(input.returnAddress ? { return_shipping_address: toPayPalAddress(input.returnAddress) } : {}),
       },
       requestId,
     });
     this.disputeCache.delete(disputeId);
-    return this.written(op, requestId, { amount: input });
+    return this.written(op, requestId, {
+      offer_type: offerType,
+      amount: { amount: input.amount, currency: input.currency },
+      ...(input.returnAddress ? { return_shipping_address: input.returnAddress } : {}),
+    });
   }
 
   async acceptClaim(disputeId: string, note: string, requestId: string) {
@@ -521,6 +564,20 @@ export class PayPalSandbox implements PayPalClient {
       address: address
         ? { line1: address.address_line_1, city: address.admin_area_2, postalCode: address.postal_code, country: address.country_code }
         : null,
+    };
+  }
+
+  /** 付款的当前状态。它会变：eCheck 到账后转为完成，买家开争议后转为待处理。 */
+  async getCapture(captureId: string): Promise<PayPalCaptureState> {
+    const body = await this.request<{
+      status?: string;
+      status_details?: { reason?: string };
+      seller_protection?: { status?: string };
+    }>('GET', `/v2/payments/captures/${encodeURIComponent(captureId)}`);
+    return {
+      status: body.status ?? 'UNKNOWN',
+      reason: body.status_details?.reason ?? null,
+      sellerProtection: body.seller_protection?.status ?? null,
     };
   }
 

@@ -3,12 +3,14 @@ import { ClaimList } from '@/components/ClaimList';
 import { PayPalSyncButton } from '@/components/PayPalSyncButton';
 import { publicPayPalStatus } from '@/paypal/config';
 import { ready } from '@/server/bootstrap';
+import { pageUser } from '@/server/guard';
 import { listClaims } from '@/server/repo';
 
 export const dynamic = 'force-dynamic';
 
 export default async function ClaimsPage() {
   await ready();
+  await pageUser();
   const claims = listClaims();
   return (
     <>

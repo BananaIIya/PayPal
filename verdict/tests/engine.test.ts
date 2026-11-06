@@ -189,7 +189,14 @@ describe('验收场景（开发文档“测试与验收场景”）', () => {
   it('易腐商品 → 不建议退货', () => {
     const r = decide(input('damaged', [identityMatch], { policy: { ...POLICY, returnable: false, perishable: true } }));
     expect(r.notices.join()).toContain('不要求退货');
+    expect(r.notices.join()).toContain('签收到首次反馈');
     expect(r.primaryAction.reason).toContain('不要求退货');
+  });
+
+  it('可退货的易腐商品也提示看签收到首次反馈的间隔', () => {
+    const r = decide(input('damaged', [identityMatch], { policy: { ...POLICY, returnable: true, perishable: true } }));
+    expect(r.notices.join()).toContain('签收到首次反馈');
+    expect(r.notices.join()).not.toContain('不要求退货');
   });
 
   it('安全敏感类目 → 先提示按安全事件处理', () => {

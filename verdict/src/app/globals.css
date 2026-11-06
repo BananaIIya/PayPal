@@ -63,6 +63,21 @@ code, .mono { font-family: var(--mono); font-size: 12px; }
 .shell-top nav a:hover { background: #33322d; color: #fff; text-decoration: none; }
 .sim-pill { font-size: 12px; color: #f2d48f; border: 1px solid #5d5230; border-radius: 99px; padding: 2px 10px; white-space: nowrap; }
 .page { max-width: 1320px; margin: 0 auto; padding: 24px; }
+.shell-user { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #cfccc3; white-space: nowrap; }
+.shell-user .role { font-size: 11px; border: 1px solid #4a4840; border-radius: 99px; padding: 0 7px; color: #e8e5dc; }
+.btn.btn-ghost-dark { min-height: 28px; padding: 3px 10px; background: transparent; border-color: #4a4840; color: #e8e5dc; }
+.btn.btn-ghost-dark:hover:not(:disabled) { background: #33322d; }
+
+/* 登录、首次设置、设置密码 */
+fieldset.bare { border: 0; padding: 0; margin: 0; min-width: 0; }
+.member-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.member-row { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.link-box { display: flex; gap: 8px; margin-top: 8px; }
+.link-box input { font-family: var(--mono); font-size: 12px; }
+.auth-shell { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px 16px; gap: 14px; }
+.auth-brand { font-weight: 700; font-size: 20px; letter-spacing: .02em; }
+.auth-card { width: 100%; max-width: 400px; }
+.auth-card h1 { font-size: 18px; margin-bottom: 14px; }
 
 /* 通用 */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
@@ -91,7 +106,7 @@ code, .mono { font-family: var(--mono); font-size: 12px; }
 .btn-lg { min-height: 46px; font-size: 16px; padding: 10px 18px; width: 100%; }
 .btn-link { background: none; border: 0; color: var(--accent); padding: 0; min-height: 0; font: inherit; cursor: pointer; }
 
-input[type='text'], input[type='number'], textarea, select {
+input[type='text'], input[type='number'], input[type='email'], input[type='password'], textarea, select {
   width: 100%; padding: 8px 10px;
   border: 1px solid var(--line-strong); border-radius: 7px;
   background: #fff; color: var(--ink); font: inherit;
@@ -238,6 +253,9 @@ pre.raw { background: #1f1e1b; color: #e8e6df; padding: 10px 12px; border-radius
 .ref-grid figcaption { padding: 4px 8px; font-size: 12px; color: var(--ink-2); }
 .two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
 .two-col .card + .card { margin-top: 0; }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0 18px; }
+fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+legend { font-weight: 600; margin-bottom: 8px; padding: 0; }
 
 /* 买家索赔页：手机优先 */
 .portal { min-height: 100dvh; background: var(--surface); }

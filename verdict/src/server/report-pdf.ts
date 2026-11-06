@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
-import { ANALYZER_LABEL, CLAIM_TYPE_LABEL, LEVEL_LABEL, SHOT_LABEL, SOURCE_LABEL, STRENGTH_LABEL } from '@/core/catalog';
+import { ANALYZER_LABEL, CLAIM_TYPE_LABEL, describeConfig, LEVEL_LABEL, SHOT_LABEL, SOURCE_LABEL, STRENGTH_LABEL } from '@/core/catalog';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
 import type { Finding, VerdictReport } from '@/core/types';
 import { claimDetail, type ClaimDetail } from './repo';
@@ -74,6 +74,29 @@ export function findReportFont(): FontCandidate | null {
   }
   if (g.__verdictReportFont === undefined) g.__verdictReportFont = FONT_CANDIDATES.find(usable) ?? null;
   return g.__verdictReportFont;
+}
+
+/**
+ * fontkit（2.0.4）排横排文字时也会套用 vert/vrt2，华文黑体、宋体的全角标点因此变成竖排字形：
+ * 括号成了 ︵︶，句号成了 °。只有显式写 false 才能关掉，数组写法关不掉，所以这里用对象再转成类型声明要的数组。
+ * fontkit 会往传入的对象上写默认特性，所以每次都返回新对象。
+ */
+export function horizontalFeatures(): PDFKit.Mixins.OpenTypeFeatures[] {
+  return { vert: false, vrt2: false } as unknown as PDFKit.Mixins.OpenTypeFeatures[];
+}
+
+// 只给商家看的操作记录。标题与 server/actions.ts、重新分析接口里写入时间线的文字一致，改那边时要一起改（有测试兜底）。
+const INTERNAL_TIMELINE_TITLES = new Set(['动作执行失败', '动作结果不明', '动作未生效（人工核对）', '沙箱测试工具', '商家请求重新分析']);
+
+/**
+ * 提交版的时间线：去掉失败和结果不明的动作、人工对账、沙箱测试工具、重新分析；
+ * 成功的动作只留标题，不带确认人账号和接口路径。
+ */
+export function visibleTimeline<T extends { kind: string; title: string; detail: string | null }>(timeline: T[], audience: ReportAudience): T[] {
+  if (audience === 'merchant') return timeline;
+  return timeline
+    .filter((t) => !INTERNAL_TIMELINE_TITLES.has(t.title))
+    .map((t) => (t.kind === 'action' ? { ...t, title: t.title.replace(/（人工核对）$/, ''), detail: null } : t));
 }
 
 const STATUS = { holds: '成立', refuted: '不成立', insufficient: '证据不足' } as const;
@@ -175,18 +198,18 @@ function draw(
   };
   const heading = (text: string) => {
     ensureSpace(60);
-    doc.moveDown(0.8).fontSize(13).fillColor(COLOR.text).text(text);
+    doc.moveDown(0.8).fontSize(13).fillColor(COLOR.text).text(text, { features: horizontalFeatures() });
     const y = doc.y + 2;
     doc.moveTo(PAGE_MARGIN, y).lineTo(PAGE_MARGIN + width, y).lineWidth(0.5).strokeColor(COLOR.line).stroke();
     doc.moveDown(0.5);
   };
   const para = (text: string, opts: { size?: number; color?: string } = {}) => {
-    doc.fontSize(opts.size ?? 10).fillColor(opts.color ?? COLOR.text).text(text, { width, lineGap: 2 });
+    doc.fontSize(opts.size ?? 10).fillColor(opts.color ?? COLOR.text).text(text, { width, lineGap: 2, features: horizontalFeatures() });
   };
   const small = (text: string) => para(text, { size: 8.5, color: COLOR.muted });
 
   // ---------- 标题 ----------
-  doc.fontSize(18).text('核验报告');
+  doc.fontSize(18).text('核验报告', { features: horizontalFeatures() });
   doc.moveDown(0.3);
   small(
     [
@@ -256,7 +279,7 @@ function draw(
       shown.forEach((id, i) => {
         const x = PAGE_MARGIN + i * (boxW + 10);
         doc.image(thumbs.get(id)!, x, top, { fit: [boxW, boxH], align: 'center', valign: 'center' });
-        doc.fontSize(7.5).fillColor(COLOR.muted).text(images.get(id)!.label, x, top + boxH + 2, { width: boxW, lineBreak: false, ellipsis: true });
+        doc.fontSize(7.5).fillColor(COLOR.muted).text(images.get(id)!.label, x, top + boxH + 2, { width: boxW, lineBreak: false, ellipsis: true, features: horizontalFeatures() });
       });
       doc.x = PAGE_MARGIN;
       doc.y = top + boxH + 14;
@@ -276,7 +299,7 @@ function draw(
 
   // ---------- 时间线 ----------
   heading('时间线');
-  for (const t of detail.timeline) {
+  for (const t of visibleTimeline(detail.timeline, audience)) {
     ensureSpace(16);
     para(`${fmtTime(t.at)}  ${t.title}${t.detail ? ` · ${SHOT_LABEL[t.detail] ?? t.detail}` : ''}`, { size: 9 });
   }
@@ -295,6 +318,7 @@ function draw(
     }
     heading('审计记录');
     small(`规则版本 ${r.rulesVersion}`);
+    small(`权重配置：${describeConfig(r.config)}`);
     for (const t of r.ruleTrace) small(`· ${t}`);
   }
 
@@ -307,7 +331,7 @@ function draw(
     doc
       .fontSize(7.5)
       .fillColor(COLOR.muted)
-      .text(`Verdict · 判定 ${verdict.id} · 第 ${i + 1} / ${range.count} 页`, PAGE_MARGIN, doc.page.height - 30, { width, align: 'center', lineBreak: false });
+      .text(`Verdict · 判定 ${verdict.id} · 第 ${i + 1} / ${range.count} 页`, PAGE_MARGIN, doc.page.height - 30, { width, align: 'center', lineBreak: false, features: horizontalFeatures() });
     doc.page.margins.bottom = bottom;
   }
 

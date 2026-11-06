@@ -5,15 +5,18 @@ import { dataProcessors } from '@/providers/registry';
 import { ready } from '@/server/bootstrap';
 import { json } from '@/server/db';
 import { requireToken } from '@/server/portal';
+import { limitPortal } from '@/server/rate-limit';
 import { claimEvidence, getClaim, getOrder, getPolicy } from '@/server/repo';
 
 export const dynamic = 'force-dynamic';
 
 const PORTAL_TYPES: ClaimType[] = ['not_received', 'damaged', 'not_as_described', 'missing_items'];
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   await ready();
   const { token } = await params;
+  const limited = limitPortal(req, token, 'read');
+  if (limited) return limited;
   const check = requireToken(token);
   if (check instanceof NextResponse) return check;
   const claim = getClaim(check.payload.claimId);

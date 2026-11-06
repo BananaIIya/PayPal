@@ -207,6 +207,22 @@ function evidenceAction(ctx: Ctx): SuggestedAction {
 }
 
 /** 判定引擎不会主动建议、但 PayPal 当前允许的后续操作。 */
+/**
+ * 退货退款和解的草稿。判定引擎不知道 PayPal 允许哪种和解，所以和后续操作一样由控制台在
+ * PayPal 给出 REFUND_WITH_RETURN 时追加。买家寄回后，商家在“确认退货收货情况”里填写验收结果。
+ */
+export function returnOfferDraft(claim: { amount: number; currency: string }): SuggestedAction {
+  return {
+    type: 'make_offer',
+    label: '提出退货退款',
+    reason: '买家先把商品寄回，商家验货后再退款。适合商品可以退回、需要先看到实物的情况。金额可修改。',
+    paypalOperation: OPERATION.make_offer(true),
+    offerAmount: claim.amount,
+    withReturn: true,
+    notes: `您好，很抱歉商品没有达到您的预期。请按 PayPal 提供的退货地址寄回商品，我们收到并验货后会退还 ${claim.currency} ${claim.amount.toFixed(2)}。`,
+  };
+}
+
 export const FOLLOW_UP_TYPES = ['provide_supporting_info', 'acknowledge_return_item', 'appeal'] as const satisfies readonly ActionType[];
 export type FollowUpType = (typeof FOLLOW_UP_TYPES)[number];
 
@@ -233,9 +249,11 @@ export function followUpDraft(type: FollowUpType, report: VerdictReport, claim: 
       return {
         type,
         label: '确认退货收货情况',
-        reason: related.length
-          ? `请按实际验收结果选择。核验中有与退回物相关的发现（${related.join('、')}），但系统无法代替开箱验收。`
-          : '请按实际验收结果选择。系统无法代替开箱验收，默认选项只是“已收到”。',
+        reason: `${
+          related.length
+            ? `请按实际验收结果选择。核验中有与退回物相关的发现（${related.join('、')}），但系统无法代替开箱验收。`
+            : '请按实际验收结果选择。系统无法代替开箱验收，默认选项只是“已收到”。'
+        }选“已收到，状态正常”后 PayPal 会直接退款结案。`,
         paypalOperation: OPERATION.acknowledge_return_item(true),
         acknowledgementType: 'ITEM_RECEIVED',
         notes: '商家已收到买家退回的包裹。',

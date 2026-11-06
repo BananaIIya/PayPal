@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ready } from '@/server/bootstrap';
+import { authorize } from '@/server/guard';
 import { db } from '@/server/db';
 import { getOrder } from '@/server/repo';
 
@@ -7,6 +8,8 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   await ready();
+  const auth = authorize(req, { write: true });
+  if (auth instanceof NextResponse) return auth;
   const { id } = await params;
   if (!getOrder(id)) return NextResponse.json({ error: '订单不存在' }, { status: 404 });
   const body = await req.json().catch(() => null);

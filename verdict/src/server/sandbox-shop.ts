@@ -2,6 +2,7 @@
 // 物流仍是模拟的：Verdict 没有接真实承运商，付款成功后生成一条已签收的轨迹。
 import crypto from 'node:crypto';
 import { requireSandbox } from '@/paypal';
+import type { PayPalCaptureState } from '@/paypal/sandbox';
 import type { TrackingResult } from '@/providers/types';
 import { db, newId, nowIso } from './db';
 import type { OrderRow } from './repo';
@@ -104,6 +105,58 @@ export async function completeTestOrder(token: string): Promise<{ orderId: strin
       order.id,
     );
   return { orderId: order.id };
+}
+
+const CAPTURE_LABEL: Record<string, string> = {
+  COMPLETED: '已完成',
+  PENDING: '待处理',
+  REFUNDED: '已全额退款',
+  PARTIALLY_REFUNDED: '已部分退款',
+  DECLINED: '被拒绝',
+  FAILED: '失败',
+};
+
+const PROTECTION_LABEL: Record<string, string> = {
+  ELIGIBLE: '有卖家保护',
+  PARTIALLY_ELIGIBLE: '有部分卖家保护',
+  NOT_ELIGIBLE: '没有卖家保护',
+};
+
+export interface CaptureStateView {
+  /** 给订单页看的一行字，比如“待处理 · 没有卖家保护”。 */
+  summary: string;
+  /** 这笔付款的状态会影响后续操作时才有。 */
+  warning: string | null;
+  /** 读不到状态时的原因，此时其他字段不可信。 */
+  error: string | null;
+}
+
+export function describeCapture(state: PayPalCaptureState): Pick<CaptureStateView, 'summary' | 'warning'> {
+  const summary = [CAPTURE_LABEL[state.status] ?? state.status, state.sellerProtection ? (PROTECTION_LABEL[state.sellerProtection] ?? state.sellerProtection) : null]
+    .filter(Boolean)
+    .join(' · ');
+  if (state.status !== 'PENDING') return { summary, warning: null };
+  if (state.reason === 'ECHECK') {
+    return {
+      summary,
+      warning:
+        '买家用银行账户付款（eCheck），款项还没到账，也没有卖家保护。这种付款不能部分退款，买家发起争议时的选项也会少很多。要测试完整流程，请重新下单，并在 PayPal 付款页选 Visa。',
+    };
+  }
+  if (state.reason === 'BUYER_COMPLAINT') {
+    return { summary, warning: '买家发起了争议，PayPal 暂扣了这笔款，争议结束后状态才会变。' };
+  }
+  return { summary, warning: `PayPal 还没有完成这笔付款（原因：${state.reason ?? '未说明'}），退款等操作可能会被拒绝。` };
+}
+
+/** 只有已付款的沙箱订单才有状态可读。读不到时不影响页面其他内容。 */
+export async function captureState(order: OrderRow): Promise<CaptureStateView | null> {
+  if (order.paypal_env !== 'sandbox' || !order.capture_id) return null;
+  try {
+    return { ...describeCapture(await requireSandbox().getCapture(order.capture_id)), error: null };
+  } catch (e) {
+    return { summary: '暂时读取不到', warning: null, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** 买家取消付款：删掉还没付款的本地订单。已付款的订单不受影响。 */

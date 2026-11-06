@@ -2,7 +2,7 @@
 import crypto from 'node:crypto';
 import type { ActionType, ReturnAckType } from '@/core/types';
 import { db, json, newId, nowIso } from '@/server/db';
-import type { DisputeView, EvidenceInput, PayPalClient, PayPalDocument, PayPalWriteResult } from './client';
+import type { DisputeView, EvidenceInput, OfferInput, PayPalClient, PayPalDocument, PayPalWriteResult } from './client';
 
 interface DisputeRow {
   id: string;
@@ -63,7 +63,8 @@ function toView(row: DisputeRow): DisputeView {
     buyerName: null,
     item: null,
     allowedActions: allowed(row),
-    offerTypes: ['REFUND'],
+    offerTypes: ['REFUND', 'REFUND_WITH_RETURN'],
+    submittedEvidenceTypes: [],
     outcome: null,
     sandboxTools: { requireEvidence: false, adjudicate: false },
     log: json(row.log, []),
@@ -145,10 +146,12 @@ export class PayPalSimulator implements PayPalClient {
     return this.mutate(disputeId, 'appeal', requestId, `POST /v1/customer/disputes/${disputeId}/appeal`, detail, { status: 'UNDER_REVIEW' });
   }
 
-  async makeOffer(disputeId: string, input: { amount: number; currency: string; note: string }, requestId: string) {
-    return this.mutate(disputeId, 'make_offer', requestId, `POST /v1/customer/disputes/${disputeId}/make-offer`, input, {
+  async makeOffer(disputeId: string, input: OfferInput, requestId: string) {
+    const offerType = input.returnAddress ? 'REFUND_WITH_RETURN' : 'REFUND';
+    const res = this.mutate(disputeId, 'make_offer', requestId, `POST /v1/customer/disputes/${disputeId}/make-offer`, { ...input, offer_type: offerType }, {
       status: 'WAITING_FOR_BUYER_RESPONSE',
     });
+    return { ...res, offer_type: offerType, ...(input.returnAddress ? { return_shipping_address: input.returnAddress } : {}) };
   }
 
   async acceptClaim(disputeId: string, note: string, requestId: string) {

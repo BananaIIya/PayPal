@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ready } from '@/server/bootstrap';
 import { db, newId, nowIso } from '@/server/db';
 import { requireToken } from '@/server/portal';
+import { limitPortal } from '@/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +13,8 @@ const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 去掉容易混淆的 0 O
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   await ready();
   const { token } = await params;
+  const limited = limitPortal(req, token, 'challenge');
+  if (limited) return limited;
   const check = requireToken(token);
   if (check instanceof NextResponse) return check;
   const body = await req.json().catch(() => ({}));

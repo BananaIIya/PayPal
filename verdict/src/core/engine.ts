@@ -249,7 +249,8 @@ export function decide(input: EngineInput): VerdictReport {
   if (qualityNotice) notices.push(`疑似商品质量或履约问题（M=${M.toFixed(2)}）：建议优先排查商品与发货环节。`);
   if (has('DELIVERY_ADDRESS_MISMATCH') || has('SHIPPED_BEFORE_ORDER'))
     notices.push('商家自己的物流证据不足以证明送达：系统不建议把这个单号提交给 PayPal。');
-  if (!policy.returnable) notices.push('类目策略：该类商品不要求退货，重点看签收到首次反馈的间隔。');
+  if (!policy.returnable) notices.push('类目策略：该类商品不要求退货。');
+  if (policy.perishable) notices.push('类目策略：易腐商品，重点看签收到首次反馈的间隔。');
   if (input.merchantFactors.listingChangedAfterOrder)
     notices.push('下单后商品描述被修改过：本次按下单时的商品快照判定。');
   if (claim.alreadyAgreed) notices.push('时间线显示双方已就退款达成一致：不再建议反驳。');
@@ -290,6 +291,7 @@ export function decide(input: EngineInput): VerdictReport {
     ruleTrace: trace,
     merchantFactors: input.merchantFactors,
     rulesVersion: RULES_VERSION,
+    config: input.config,
   };
 }
 

@@ -1,10 +1,11 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ANALYZER_LABEL, CLAIM_TYPE_LABEL, LEVEL_LABEL, SHOT_LABEL, SOURCE_LABEL, STRENGTH_LABEL } from '@/core/catalog';
+import { ANALYZER_LABEL, CLAIM_TYPE_LABEL, describeConfig, LEVEL_LABEL, SHOT_LABEL, SOURCE_LABEL, STRENGTH_LABEL } from '@/core/catalog';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
 import { PrintButton } from '@/components/PrintButton';
 import { fmtDateTime, fmtMoney } from '@/components/format';
 import { ready } from '@/server/bootstrap';
+import { pageUser } from '@/server/guard';
 import { claimView } from '@/server/views';
 
 export const dynamic = 'force-dynamic';
@@ -13,6 +14,7 @@ const STATUS = { holds: '成立', refuted: '不成立', insufficient: '证据不
 
 export default async function ReportPage({ params }: { params: Promise<{ id: string }> }) {
   await ready();
+  await pageUser();
   const { id } = await params;
   const v = await claimView(id);
   if (!v || !v.verdict) notFound();
@@ -158,6 +160,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         <section>
           <h2>审计记录</h2>
           <p className="small">规则版本 {r.rulesVersion}</p>
+          <p className="small">权重配置：{describeConfig(r.config)}</p>
           {r.ruleTrace.map((t) => (
             <p key={t} className="small">
               · {t}

@@ -4,13 +4,16 @@ import { CLAIM_TYPE_LABEL, SHOT_LABEL, STATUS_LABEL } from '@/core/catalog';
 import { OrderTools } from '@/components/OrderTools';
 import { fmtDateTime, fmtMoney } from '@/components/format';
 import { ready } from '@/server/bootstrap';
+import { pageUser } from '@/server/guard';
 import { db, json } from '@/server/db';
 import { getOrder, getTracking, orderReferences, type ClaimRow } from '@/server/repo';
+import { captureState } from '@/server/sandbox-shop';
 
 export const dynamic = 'force-dynamic';
 
 export default async function OrderPage({ params }: { params: Promise<{ id: string }> }) {
   await ready();
+  await pageUser();
   const { id } = await params;
   const order = getOrder(id);
   if (!order) notFound();
@@ -20,6 +23,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
   const tracking = getTracking(order);
   const refs = orderReferences(id);
   const claims = db().prepare('SELECT * FROM claims WHERE order_id = ? ORDER BY created_at DESC').all(id) as unknown as ClaimRow[];
+  const capture = await captureState(order);
 
   return (
     <>
@@ -31,6 +35,11 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           {order.order_no} · {items[0]?.title}
         </h1>
       </div>
+      {capture?.warning && (
+        <p className="notice" style={{ marginBottom: 14 }}>
+          {capture.warning}
+        </p>
+      )}
       <div className="two-col">
         <div className="stack" style={{ gap: 14 }}>
           <section className="card card-pad">
@@ -38,6 +47,12 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
             <dl className="kv">
               <dt>金额</dt>
               <dd className="num">{fmtMoney(order.amount, order.currency)}</dd>
+              {capture && (
+                <>
+                  <dt>付款状态</dt>
+                  <dd title={capture.error ?? undefined}>{capture.summary}</dd>
+                </>
+              )}
               <dt>商品</dt>
               <dd>
                 {items.map((i) => (
@@ -76,6 +91,13 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                     </li>
                   ))}
                 </ol>
+              </>
+            ) : order.tracking_number ? (
+              <>
+                <p className="small" style={{ marginBottom: 6 }}>
+                  {order.carrier} <span className="mono">{order.tracking_number}</span>
+                </p>
+                <p className="muted small">没有物流轨迹：还没有接入物流接口（EasyPost、Shippo），Logistics 分析器会标为未执行。</p>
               </>
             ) : (
               <p className="muted">这笔订单没有物流信息。</p>

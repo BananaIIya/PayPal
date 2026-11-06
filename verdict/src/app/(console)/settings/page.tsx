@@ -1,11 +1,18 @@
-import { DEFAULT_CONFIG, SOURCE_LABEL, STRENGTH_LABEL } from '@/core/catalog';
-import type { SourceMark, Strength } from '@/core/types';
+import { AccountCard } from '@/components/AccountCard';
+import { PayPalCredentialsCard } from '@/components/PayPalCredentialsCard';
 import { PayPalSandboxCard } from '@/components/PayPalSandboxCard';
 import { ResetDemo } from '@/components/ResetDemo';
+import { SettingsForm } from '@/components/SettingsForm';
+import { TeamCard } from '@/components/TeamCard';
 import { publicPayPalStatus } from '@/paypal/config';
 import { providerStatus } from '@/providers/registry';
+import { listMembers } from '@/server/auth';
 import { ready } from '@/server/bootstrap';
+import { pageUser } from '@/server/guard';
+import { paypalCredentialView } from '@/server/paypal-credentials';
 import { lastSync } from '@/server/paypal-sync';
+import { defaultMerchantId } from '@/server/repo';
+import { settingsView } from '@/server/settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,9 +22,15 @@ const STATE = {
   simulated: { text: '模拟', cls: 'badge-sim' },
 } as const;
 
+// node:sqlite 的行没有原型，跨到客户端组件前转成普通对象。
+const plain = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
 export default async function SettingsPage() {
   await ready();
-  const cfg = DEFAULT_CONFIG;
+  const viewer = await pageUser();
+  const isOwner = viewer.role === 'owner';
+  const merchantId = defaultMerchantId();
+  const settings = merchantId ? plain(settingsView(merchantId)) : null;
   const sandbox = publicPayPalStatus();
   const services = providerStatus().map((p) => {
     if (p.category !== 'PayPal' || sandbox.state === 'off') return p;
@@ -30,7 +43,11 @@ export default async function SettingsPage() {
       <div className="page-head">
         <div>
           <h1>设置</h1>
-          <p className="muted">MVP 里这一页只读。真实密钥通过环境变量配置，参见 .env.example。</p>
+          <p className="muted">
+            {isOwner
+              ? '成员、PayPal 凭证、判定权重、类目策略、退货地址和保留期在这里改。检测服务和 LLM 的密钥通过环境变量配置，参见 .env.example。'
+              : '你是客服账号：可以修改自己的密码，查看判定设置。成员、PayPal 凭证和判定设置由店主管理。'}
+          </p>
         </div>
       </div>
       <div className="two-col">
@@ -48,40 +65,29 @@ export default async function SettingsPage() {
         </section>
         <div className="stack" style={{ gap: 14 }}>
           <PayPalSandboxCard status={sandbox} lastSync={lastSync()} />
-          <section className="card card-pad">
-            <h2>判定权重与阈值</h2>
-            <dl className="kv">
-              {(Object.keys(cfg.strengthWeight) as Strength[]).map((k) => (
-                <div key={k} style={{ display: 'contents' }}>
-                  <dt>强度 {STRENGTH_LABEL[k]}</dt>
-                  <dd className="num">{cfg.strengthWeight[k]}</dd>
-                </div>
-              ))}
-              {(['live_capture', 'paypal_dispute', 'uploaded', 'narrative'] as SourceMark[]).map((k) => (
-                <div key={k} style={{ display: 'contents' }}>
-                  <dt>{SOURCE_LABEL[k]}</dt>
-                  <dd className="num">{cfg.sourceWeight[k]}</dd>
-                </div>
-              ))}
-              <dt>中风险阈值</dt>
-              <dd className="num">R ≥ {cfg.riskMedium}</dd>
-              <dt>高风险阈值</dt>
-              <dd className="num">R ≥ {cfg.riskHigh}</dd>
-              <dt>Q 充足</dt>
-              <dd className="num">Q ≥ {cfg.minDataConfidence}（文档未定义，MVP 暂定）</dd>
-              <dt>M 高</dt>
-              <dd className="num">M ≥ {cfg.merchantRiskHigh}（文档未定义，MVP 暂定）</dd>
-            </dl>
-          </section>
-          <section className="card card-pad">
-            <h2>演示数据</h2>
-            <p className="muted" style={{ marginBottom: 10 }}>
-              清空你的操作和新建的索赔，恢复到 18 个初始场景。沙箱订单的本地记录也会被清除，PayPal 上的交易不受影响，还在进行的争议之后会重新同步过来。
-            </p>
-            <ResetDemo />
-          </section>
+          {isOwner && merchantId && <PayPalCredentialsCard initial={plain(paypalCredentialView(merchantId))} />}
         </div>
       </div>
+      <div className="two-col" style={{ marginTop: 14 }}>
+        {isOwner ? <TeamCard initial={plain(listMembers(viewer.merchantId))} selfId={viewer.id} /> : <AccountCard name={viewer.name} email={viewer.email} role={viewer.role} />}
+        <div className="stack" style={{ gap: 14 }}>
+          {isOwner && <AccountCard name={viewer.name} email={viewer.email} role={viewer.role} />}
+          {isOwner && (
+            <section className="card card-pad">
+              <h2>演示数据</h2>
+              <p className="muted" style={{ marginBottom: 10 }}>
+                清空你的操作和新建的索赔，恢复到 18 个初始场景。沙箱订单的本地记录也会被清除，PayPal 上的交易不受影响，还在进行的争议之后会重新同步过来。判定设置也会恢复默认；账号和 PayPal 凭证保留。
+              </p>
+              <ResetDemo />
+            </section>
+          )}
+        </div>
+      </div>
+      {settings && (
+        <div className="stack" style={{ gap: 14, marginTop: 14 }}>
+          <SettingsForm initial={settings} readOnly={!isOwner} />
+        </div>
+      )}
     </>
   );
 }

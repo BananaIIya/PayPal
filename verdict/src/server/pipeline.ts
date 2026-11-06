@@ -1,7 +1,7 @@
 // 编排器：按索赔类型派发分析器，并行运行；任一分析器完成后重新计算判定。
 // MVP 用进程内执行代替 BullMQ + Worker，接口边界保持不变，之后可以把 runAnalysis 挪进 Worker。
 import { ANALYZER_IMPL, type AnalyzerContext, type OtherEvidence } from '@/analyzers';
-import { applicableAnalyzers, DEFAULT_CONFIG } from '@/core/catalog';
+import { applicableAnalyzers } from '@/core/catalog';
 import { decide } from '@/core/engine';
 import type { AnalyzerName, EngineInput, MerchantRiskFactors } from '@/core/types';
 import { SimulatedTracking } from '@/providers/registry';
@@ -17,6 +17,7 @@ import {
   getPolicy,
   getTracking,
   latestVerdict,
+  merchantEngineConfig,
   orderReferences,
   toOrderView,
   type ClaimRow,
@@ -221,7 +222,7 @@ export function recompute(claimId: string): void {
     runs: claimRuns(claimId),
     hasReference: references.length > 0,
     merchantFactors: merchantFactors(claim, order),
-    config: DEFAULT_CONFIG,
+    config: merchantEngineConfig(claim.merchant_id),
   };
   const report = decide(input);
 
@@ -270,8 +271,21 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
+export function isAnalysisRunning(claimId: string): boolean {
+  return running.has(claimId);
+}
+
+/** 证据原件按保留期删除后不能重新分析：分析器读不到文件，会把原来的信号清掉。 */
+export function hasPurgedEvidence(claimId: string): boolean {
+  return claimEvidence(claimId).some((e) => !!e.purged_at);
+}
+
 export async function runAnalysis(claimId: string, opts: RunOptions = {}): Promise<void> {
   if (running.has(claimId)) return;
+  if (hasPurgedEvidence(claimId)) {
+    addTimeline(claimId, 'analysis', '跳过重新分析', '证据原件已按保留期删除，保留原来的信号和判定');
+    return;
+  }
   running.add(claimId);
   try {
     const claim = getClaim(claimId);

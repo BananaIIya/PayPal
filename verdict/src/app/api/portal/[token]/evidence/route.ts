@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ready } from '@/server/bootstrap';
 import { db, nowIso } from '@/server/db';
 import { requireToken } from '@/server/portal';
+import { clientIp, limitPortal } from '@/server/rate-limit';
 import { addEvidence, addTimeline, getClaim } from '@/server/repo';
 import { MAX_UPLOAD_BYTES, sniffImageType } from '@/server/storage';
 
@@ -13,6 +14,8 @@ const CHALLENGE_TTL_MS = 15 * 60 * 1000;
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   await ready();
   const { token } = await params;
+  const limited = limitPortal(req, token, 'upload');
+  if (limited) return limited;
   const check = requireToken(token);
   if (check instanceof NextResponse) return check;
   const claim = getClaim(check.payload.claimId);
@@ -55,7 +58,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       serverTime: nowIso(),
       durationMs,
       userAgent: req.headers.get('user-agent'),
-      ip: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+      ip: clientIp(req),
     },
   });
   addTimeline(claim.id, 'evidence', challengeId ? '现场拍摄证据上传' : '相册证据上传', shot ?? undefined);

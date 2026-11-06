@@ -166,6 +166,46 @@ CREATE TABLE IF NOT EXISTS sim_requests (
 CREATE TABLE IF NOT EXISTS sim_refunds (
   id TEXT PRIMARY KEY, capture_id TEXT NOT NULL, amount REAL NOT NULL, created_at TEXT NOT NULL
 );
+-- 控制台账号。演示重置不清这几张表：账号和凭证不是演示数据。
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  merchant_id TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner','agent')),
+  password_hash TEXT,
+  failed_logins INTEGER NOT NULL DEFAULT 0,
+  locked_until TEXT,
+  disabled_at TEXT,
+  last_login_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS password_tokens (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  purpose TEXT NOT NULL CHECK (purpose IN ('invite','reset')),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+-- 商家的 PayPal 凭证。secret 用 AES-256-GCM 加密，密钥来自 APP_ENCRYPTION_KEY，不进数据库。
+CREATE TABLE IF NOT EXISTS paypal_credentials (
+  merchant_id TEXT PRIMARY KEY,
+  env TEXT NOT NULL CHECK (env IN ('sandbox')),
+  client_id TEXT NOT NULL,
+  secret_enc TEXT NOT NULL,
+  webhook_id TEXT,
+  updated_by TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 const g = globalThis as unknown as { __verdictDb?: DatabaseSync };
@@ -184,6 +224,8 @@ export function db(): DatabaseSync {
     ensureColumn(conn, 'orders', 'paypal_env', "paypal_env TEXT NOT NULL DEFAULT 'simulator'");
     ensureColumn(conn, 'claims', 'paypal_updated_at', 'paypal_updated_at TEXT');
     ensureColumn(conn, 'claims', 'paypal_status', 'paypal_status TEXT');
+    // 证据原件按保留期删除后记下时间；行和哈希保留，复用检测和审计仍然可用。
+    ensureColumn(conn, 'evidence', 'purged_at', 'purged_at TEXT');
     g.__verdictDb = conn;
   }
   return g.__verdictDb;

@@ -53,6 +53,70 @@ export const DEFAULT_CONFIG: EngineConfig = {
   merchantRiskHigh: 0.5,
 };
 
+/**
+ * 开发文档“默认权重”表把证据层级的权重分成四档，设置页按这四档编辑，
+ * 保存时展开成每个来源的权重。
+ */
+export const LAYER_WEIGHT_GROUPS = {
+  ab: { label: 'A、B 层（系统记录、现场拍摄）', sources: ['paypal_record', 'carrier_api', 'listing_snapshot', 'reference', 'live_capture'] },
+  cPaypal: { label: 'C 层：PayPal 争议附件', sources: ['paypal_dispute'] },
+  cUploaded: { label: 'C 层：相册上传、商家导入', sources: ['uploaded', 'manual_import'] },
+  d: { label: 'D 层：文字陈述', sources: ['narrative'] },
+} as const satisfies Record<string, { label: string; sources: SourceMark[] }>;
+export type LayerGroup = keyof typeof LAYER_WEIGHT_GROUPS;
+
+export function layerWeights(cfg: EngineConfig): Record<LayerGroup, number> {
+  return {
+    ab: cfg.sourceWeight.live_capture,
+    cPaypal: cfg.sourceWeight.paypal_dispute,
+    cUploaded: cfg.sourceWeight.uploaded,
+    d: cfg.sourceWeight.narrative,
+  };
+}
+
+export function sourceWeightsFromLayers(layers: Record<LayerGroup, number>): Record<SourceMark, number> {
+  const out = {} as Record<SourceMark, number>;
+  for (const [group, def] of Object.entries(LAYER_WEIGHT_GROUPS) as [LayerGroup, (typeof LAYER_WEIGHT_GROUPS)[LayerGroup]][]) {
+    for (const source of def.sources) out[source] = layers[group];
+  }
+  return out;
+}
+
+export function isDefaultConfig(cfg: EngineConfig): boolean {
+  const d = DEFAULT_CONFIG;
+  return (
+    (Object.keys(d.strengthWeight) as Strength[]).every((k) => cfg.strengthWeight[k] === d.strengthWeight[k]) &&
+    (Object.keys(d.sourceWeight) as SourceMark[]).every((k) => cfg.sourceWeight[k] === d.sourceWeight[k]) &&
+    cfg.riskMedium === d.riskMedium &&
+    cfg.riskHigh === d.riskHigh &&
+    cfg.minDataConfidence === d.minDataConfidence &&
+    cfg.merchantRiskHigh === d.merchantRiskHigh
+  );
+}
+
+/** 写进审计记录的一行权重配置。早于这个字段的判定没有记录配置。 */
+export function describeConfig(cfg: EngineConfig | undefined): string {
+  if (!cfg) return '这次判定没有记录权重配置（早于设置页可编辑的版本）';
+  const s = cfg.strengthWeight;
+  const l = layerWeights(cfg);
+  return [
+    isDefaultConfig(cfg) ? '默认配置' : '商家自定义',
+    `强度 ${s.strong}/${s.moderate}/${s.weak}`,
+    `层级 ${l.ab}/${l.cPaypal}/${l.cUploaded}/${l.d}`,
+    `风险阈值 ${cfg.riskMedium}/${cfg.riskHigh}`,
+    `Q≥${cfg.minDataConfidence}`,
+    `M≥${cfg.merchantRiskHigh}`,
+  ].join(' · ');
+}
+
+export const CATEGORY_LABEL: Record<string, string> = {
+  ceramics: '陶瓷',
+  electronics: '电子产品',
+  apparel: '服装',
+  fresh: '生鲜',
+  general: '其他',
+};
+
 /** 判定直接为高风险、不被其他信号抵消的强反驳信号（开发文档“计算步骤·硬规则”）。 */
 export const HARD_RULE_CODES = new Set([
   'AI_PROVENANCE_FOUND',

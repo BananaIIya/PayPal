@@ -2,6 +2,7 @@
 // 本地开发收不到 webhook，所以定时拉取是主路径，webhook 只是让更新来得更快。
 import type { DisputeView } from '@/paypal/client';
 import { getSandboxClient } from '@/paypal/sandbox';
+import { isDeletedDispute } from './data-retention';
 import { db, kvGet, kvSet, newId, nowIso } from './db';
 import { CLAIM_TYPE_BY_REASON, createClaim, type WebhookOutcome } from './ingest';
 import { startAnalysis } from './pipeline';
@@ -108,6 +109,8 @@ export function upsertClaimFromDispute(view: DisputeView): UpsertResult {
   const conn = db();
   const existing = conn.prepare('SELECT * FROM claims WHERE paypal_dispute_id = ?').get(view.id) as ClaimRow | undefined;
   if (existing) return updateExisting(existing, view);
+  // 商家删除过这笔索赔的数据，争议后来又有更新（比如申诉）时不能悄悄导回来。
+  if (isDeletedDispute(view.id)) return { outcome: 'skipped', reason: '商家已删除这笔争议在 Verdict 里的数据' };
 
   const skip = skipReason(view);
   if (skip) return { outcome: 'skipped', reason: skip };

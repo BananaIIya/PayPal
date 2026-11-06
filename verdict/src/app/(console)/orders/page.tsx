@@ -3,6 +3,7 @@ import { TestOrderForm } from '@/components/TestOrderForm';
 import { fmtMoney } from '@/components/format';
 import { publicPayPalStatus } from '@/paypal/config';
 import { ready } from '@/server/bootstrap';
+import { pageUser } from '@/server/guard';
 import { listOrders } from '@/server/repo';
 import { TEST_PRODUCTS } from '@/server/sandbox-shop';
 
@@ -10,6 +11,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function OrdersPage({ searchParams }: { searchParams: Promise<{ paypal_error?: string }> }) {
   await ready();
+  const viewer = await pageUser();
   const { paypal_error: paypalError } = await searchParams;
   const sandboxReady = publicPayPalStatus().state === 'ready';
   const orders = listOrders();
@@ -26,7 +28,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
           PayPal 付款没有完成：{paypalError}
         </p>
       )}
-      {sandboxReady && <TestOrderForm products={TEST_PRODUCTS.map((p) => ({ key: p.key, title: p.title, amount: p.amount }))} />}
+      {sandboxReady && viewer.role === 'owner' && <TestOrderForm products={TEST_PRODUCTS.map((p) => ({ key: p.key, title: p.title, amount: p.amount }))} />}
       <div className="card table-wrap">
         <table className="data">
           <thead>

@@ -20,6 +20,8 @@ export interface EvidenceRow {
   shot_label: string | null;
   challenge_id: string | null;
   created_at: string;
+  /** 原件按保留期删除的时间。删除后不能再读文件。 */
+  purged_at?: string | null;
 }
 
 export interface OrderItem {

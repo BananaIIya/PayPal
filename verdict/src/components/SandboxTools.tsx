@@ -45,7 +45,7 @@ export function SandboxTools(p: {
         PayPal 只在沙箱提供这些接口，用来把争议推进到要测试的状态。
       </p>
       {available.length === 0 ? (
-        <p className="muted small">PayPal 现在没有给这笔争议提供测试接口。新争议一般要等几分钟才会出现。</p>
+        <p className="muted small">PayPal 现在没有给这笔争议提供测试接口，所以这里不能手动推进。</p>
       ) : (
         <div className="row">
           {available.map((t) => (

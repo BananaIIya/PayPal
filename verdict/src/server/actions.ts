@@ -1,17 +1,19 @@
 // 动作执行器：系统里唯一调用 PayPal 写接口的地方。
 // 校验顺序对齐开发文档：confirm 为 true → verdictId 是最新判定 → 动作在 PayPal 当前允许的操作内。
 // actions.confirmed_by 和 confirmed_at 非空：没有商家确认记录的动作写不进库，也就发不出去。
+// 资金动作（FUND_ACTIONS）只有店主能确认，客服只能发消息、交证据、升级和申诉。
 //
 // PayPal 的争议接口不支持 PayPal-Request-Id，幂等键只在本地生效。
 // 所以超时、断连、5xx 记为 unknown（结果不明），在商家对账之前这笔索赔不能再执行任何动作。
-import { RETURN_ACK_TYPES, type ActionType, type ReturnAckType } from '@/core/types';
+import { FUND_ACTIONS, RETURN_ACK_TYPES, type ActionType, type ReturnAckType, type Role } from '@/core/types';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
 import { clientForEnv, requireSandbox } from '@/paypal';
 import { PayPalApiError, type DisputeView, type PayPalDocument, type PayPalEnv, type PayPalWriteResult } from '@/paypal/client';
 import { buildEvidenceDocuments } from './attachments';
+import { actorLabel } from './auth';
 import { db, newId, nowIso } from './db';
 import { upsertClaimFromDispute } from './paypal-sync';
-import { addTimeline, getClaim, getOrder, latestVerdict, type ClaimRow, type OrderRow } from './repo';
+import { addTimeline, getClaim, getOrder, latestVerdict, merchantReturnAddress, type ClaimRow, type OrderRow } from './repo';
 import { issuePortalToken } from './tokens';
 
 export interface ActionRequest {
@@ -20,13 +22,16 @@ export interface ActionRequest {
   verdictId: string;
   confirm: boolean;
   idempotencyKey: string;
-  confirmedBy: string;
+  /** 确认人。id 写进 actions.confirmed_by，role 决定能不能确认资金动作。 */
+  actor: Actor;
   origin: string;
   payload: {
     message?: string;
     notes?: string;
     evidenceType?: 'OTHER' | 'PROOF_OF_FULFILLMENT';
     amount?: number;
+    /** make_offer：要求买家先退货，退货地址取商家设置。 */
+    withReturn?: boolean;
     trackingNumber?: string;
     carrier?: string;
     attachEvidence?: boolean;
@@ -36,7 +41,14 @@ export interface ActionRequest {
   };
 }
 
+export interface Actor {
+  id: string;
+  role: Role;
+}
+
 export type ActionOutcome = { status: number; body: Record<string, unknown> };
+
+const FUND_DENIED = '退款、接受索赔、和解和确认收到退货会动用资金，只有店主可以确认';
 
 const VALID_TYPES: ActionType[] = [
   'refund',
@@ -103,7 +115,7 @@ function withPortalLink(text: string, claim: ClaimRow, origin: string): string {
   return text.replaceAll(PORTAL_LINK_PLACEHOLDER, `${origin}/c/${token}`);
 }
 
-function validate(req: ActionRequest, order: OrderRow): string | null {
+function validate(req: ActionRequest, order: OrderRow, claim: ClaimRow): string | null {
   const { type, payload } = req;
   const amount = payload.amount;
   if (type === 'send_message' && !payload.message?.trim()) return '消息内容不能为空';
@@ -120,6 +132,7 @@ function validate(req: ActionRequest, order: OrderRow): string | null {
     if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return '金额必须大于 0';
     if (amount > order.amount) return `金额不能超过订单金额 ${order.amount}`;
   }
+  if (payload.withReturn && (type !== 'make_offer' || !claim.paypal_dispute_id)) return '只有 PayPal 争议里的和解提议可以要求退货';
   return null;
 }
 
@@ -157,7 +170,8 @@ async function callPayPal(req: ActionRequest, claim: ClaimRow, order: OrderRow, 
       return pp.acknowledgeReturnItem(disputeId!, { note, acknowledgementType: payload.acknowledgementType! }, key);
     case 'make_offer':
       if (disputeId) {
-        return pp.makeOffer(disputeId, { amount: payload.amount!, currency: order.currency, note }, key);
+        const returnAddress = payload.withReturn ? merchantReturnAddress(claim.merchant_id) : undefined;
+        return pp.makeOffer(disputeId, { amount: payload.amount!, currency: order.currency, note, returnAddress }, key);
       }
       return pp.refundCapture(order.capture_id!, { amount: payload.amount!, currency: order.currency }, key);
     case 'accept_claim':
@@ -203,8 +217,9 @@ function replay(previous: PreviousAction): ActionOutcome {
 export async function executeAction(req: ActionRequest): Promise<ActionOutcome> {
   if (req.confirm !== true) return { status: 400, body: { error: '动作需要商家确认' } };
   if (!req.idempotencyKey) return { status: 400, body: { error: '缺少 Idempotency-Key' } };
-  if (!req.confirmedBy) return { status: 401, body: { error: '缺少确认人' } };
+  if (!req.actor?.id) return { status: 401, body: { error: '缺少确认人' } };
   if (!VALID_TYPES.includes(req.type)) return { status: 400, body: { error: '未知的动作类型' } };
+  if (FUND_ACTIONS.has(req.type) && req.actor.role !== 'owner') return { status: 403, body: { error: FUND_DENIED } };
 
   const conn = db();
   const previous = findByKey(req.idempotencyKey);
@@ -226,7 +241,7 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
     return { status: 409, body: { error: `当前状态不允许这个动作（允许：${state.allowed.join('、') || '无'}）` } };
   }
 
-  const invalid = validate(req, order);
+  const invalid = validate(req, order, claim);
   if (invalid) return { status: 400, body: { error: invalid } };
 
   const wantsFiles = ATTACHMENT_TYPES.has(req.type) && (req.payload.attachEvidence || (EVIDENCE_TYPES.has(req.type) && req.payload.attachReport));
@@ -266,7 +281,7 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
       `INSERT INTO actions (id, claim_id, verdict_id, type, payload, confirmed_by, confirmed_at, paypal_request_id, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
     )
-    .run(actionId, claim.id, verdict.id, req.type, JSON.stringify(req.payload), req.confirmedBy, confirmedAt, req.idempotencyKey);
+    .run(actionId, claim.id, verdict.id, req.type, JSON.stringify(req.payload), req.actor.id, confirmedAt, req.idempotencyKey);
 
   try {
     const result = await callPayPal(req, claim, order, message, documents);
@@ -276,7 +291,8 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
     conn.prepare("UPDATE actions SET status = 'succeeded', paypal_response = ? WHERE id = ?").run(JSON.stringify(response), actionId);
     const after = AFTER_ACTION[req.type];
     conn.prepare('UPDATE claims SET status = ? WHERE id = ?').run(after.status, claim.id);
-    addTimeline(claim.id, 'action', after.title, `确认人：${req.confirmedBy}；${response.operation}`);
+    const title = req.type === 'make_offer' && req.payload.withReturn ? '商家提出退货退款' : after.title;
+    addTimeline(claim.id, 'action', title, `确认人：${actorLabel(req.actor.id)}；${response.operation}`);
     return { status: 200, body: { actionId, status: 'succeeded', response } };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
@@ -289,7 +305,7 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
 }
 
 /** 结果不明的动作由人对照 PayPal 后台来定。系统不自动重试，避免重复退款。 */
-export function resolveAction(input: { claimId: string; actionId: string; outcome: 'succeeded' | 'failed'; confirm: boolean; confirmedBy: string }): ActionOutcome {
+export function resolveAction(input: { claimId: string; actionId: string; outcome: 'succeeded' | 'failed'; confirm: boolean; actor: Actor }): ActionOutcome {
   if (input.confirm !== true) return { status: 400, body: { error: '需要商家确认' } };
   if (input.outcome !== 'succeeded' && input.outcome !== 'failed') return { status: 400, body: { error: '结果无效' } };
   const conn = db();
@@ -297,20 +313,22 @@ export function resolveAction(input: { claimId: string; actionId: string; outcom
     | { id: string; type: ActionType; status: string; confirmed_at: string; paypal_response: string | null }
     | undefined;
   if (!action) return { status: 404, body: { error: '动作不存在' } };
+  // 标记资金动作“已生效/没生效”会决定要不要重新退款，和确认资金动作同样要店主来做。
+  if (FUND_ACTIONS.has(action.type) && input.actor.role !== 'owner') return { status: 403, body: { error: '这是资金动作，只有店主可以核对结果' } };
   const stuck = action.status === 'pending' && Date.now() - new Date(action.confirmed_at).getTime() > STUCK_PENDING_MS;
   if (action.status !== 'unknown' && !stuck) return { status: 409, body: { error: '这个动作不需要对账' } };
 
   const response = {
     ...(action.paypal_response ? (JSON.parse(action.paypal_response) as Record<string, unknown>) : {}),
-    reconciled: { by: input.confirmedBy, at: nowIso(), outcome: input.outcome },
+    reconciled: { by: input.actor.id, at: nowIso(), outcome: input.outcome },
   };
   conn.prepare('UPDATE actions SET status = ?, paypal_response = ? WHERE id = ?').run(input.outcome, JSON.stringify(response), action.id);
   if (input.outcome === 'succeeded') {
     const after = AFTER_ACTION[action.type];
     conn.prepare('UPDATE claims SET status = ? WHERE id = ?').run(after.status, input.claimId);
-    addTimeline(input.claimId, 'action', `${after.title}（人工核对）`, `核对人：${input.confirmedBy}`);
+    addTimeline(input.claimId, 'action', `${after.title}（人工核对）`, `核对人：${actorLabel(input.actor.id)}`);
   } else {
-    addTimeline(input.claimId, 'action', '动作未生效（人工核对）', `核对人：${input.confirmedBy}`);
+    addTimeline(input.claimId, 'action', '动作未生效（人工核对）', `核对人：${actorLabel(input.actor.id)}`);
   }
   return { status: 200, body: { actionId: action.id, status: input.outcome } };
 }

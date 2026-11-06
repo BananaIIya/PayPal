@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ready } from '@/server/bootstrap';
+import { authorize } from '@/server/guard';
 import { CLAIM_TYPE_BY_REASON, simulateDispute } from '@/server/ingest';
 import { getOrder } from '@/server/repo';
 
@@ -7,6 +8,8 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   await ready();
+  const auth = authorize(req, { write: true });
+  if (auth instanceof NextResponse) return auth;
   const body = await req.json().catch(() => ({}));
   if (!getOrder(String(body.orderId))) return NextResponse.json({ error: '订单不存在' }, { status: 404 });
   const reason = String(body.reason);

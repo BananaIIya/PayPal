@@ -4,6 +4,7 @@ import { ready } from '@/server/bootstrap';
 import { db } from '@/server/db';
 import { startAnalysis } from '@/server/pipeline';
 import { requireToken } from '@/server/portal';
+import { limitPortal } from '@/server/rate-limit';
 import { addTimeline, getClaim } from '@/server/repo';
 import { consumePortalToken } from '@/server/tokens';
 
@@ -14,6 +15,8 @@ const TYPES: ClaimType[] = ['not_received', 'damaged', 'not_as_described', 'miss
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   await ready();
   const { token } = await params;
+  const limited = limitPortal(req, token, 'submit');
+  if (limited) return limited;
   const check = requireToken(token);
   if (check instanceof NextResponse) return check;
   const claim = getClaim(check.payload.claimId);

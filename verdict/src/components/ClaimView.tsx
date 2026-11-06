@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ANALYZER_LABEL,
   CLAIM_TYPE_LABEL,
+  describeConfig,
   LEVEL_LABEL,
   ORIGIN_LABEL,
   SHOT_LABEL,
@@ -13,9 +14,11 @@ import {
   STRENGTH_LABEL,
 } from '@/core/catalog';
 import type { BBox, Finding, PropositionResult, RunStatus, SourceMark } from '@/core/types';
+import type { Viewer } from '@/server/guard';
 import type { PublicEvidence } from '@/server/repo';
 import type { ClaimViewData } from '@/server/views';
 import { ActionPanel } from './ActionPanel';
+import { DeleteClaim } from './DeleteClaim';
 import { SandboxTools } from './SandboxTools';
 import { dueLabel, fmtDateTime, fmtMoney } from './format';
 
@@ -28,7 +31,8 @@ function providerText(p?: string) {
   return p;
 }
 
-export function ClaimView({ initial }: { initial: ClaimViewData }) {
+export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer: Viewer }) {
+  const isOwner = viewer.role === 'owner';
   const [data, setData] = useState(initial);
   const id = initial.claim.id;
   const allEvidence = useMemo(() => [...data.evidence, ...data.references], [data.evidence, data.references]);
@@ -54,6 +58,15 @@ export function ClaimView({ initial }: { initial: ClaimViewData }) {
   const analyzing = data.runs.some((r) => r.status === 'queued' || r.status === 'running');
   const due = dueLabel(data.claim.dueAt);
   const showDeadlineWarning = due.soon && report?.incomplete && data.claim.status !== 'closed';
+  const purged = data.evidence.some((e) => e.purgedAt);
+  const deleteBlocked =
+    data.claim.disputeId && data.claim.status !== 'closed'
+      ? 'PayPal 争议还没结案，结案后才能删除，否则就不能在 Verdict 里回应这笔争议了。'
+      : data.actions.some((a) => a.status === 'pending' || a.status === 'unknown')
+        ? '有结果不明或还在执行的动作，请先在动作记录里对账。'
+        : analyzing
+          ? '分析还在进行，请稍后再删除。'
+          : null;
 
   function selectFinding(f: Finding) {
     setActiveFinding(f.signalIds[0]);
@@ -101,7 +114,12 @@ export function ClaimView({ initial }: { initial: ClaimViewData }) {
           </div>
         </div>
         <div className="row no-print">
-          <button className="btn" onClick={reanalyze} disabled={reanalyzing || analyzing}>
+          <button
+            className="btn"
+            onClick={reanalyze}
+            disabled={reanalyzing || analyzing || purged}
+            title={purged ? '证据原件已按保留期删除，不能重新分析' : undefined}
+          >
             {analyzing ? '分析中…' : '重新分析'}
           </button>
           <Link className="btn" href={`/orders/${data.order.id}`}>
@@ -120,6 +138,11 @@ export function ClaimView({ initial }: { initial: ClaimViewData }) {
           <strong>演示场景：{scenario.title}。</strong> {scenario.story} <strong>文档期望：</strong>
           {scenario.expected}。
         </div>
+      )}
+      {data.paypal.captureWarning && (
+        <p className="notice" style={{ marginBottom: 14 }}>
+          {data.paypal.captureWarning}
+        </p>
       )}
       {data.paypal.error && (
         <div className="notice notice-danger" style={{ marginBottom: 14 }}>
@@ -242,6 +265,7 @@ export function ClaimView({ initial }: { initial: ClaimViewData }) {
                 <p className="muted small" style={{ marginTop: 8 }}>
                   规则版本 {report.rulesVersion} · 判定 ID {data.verdict!.id}
                 </p>
+                <p className="muted small">权重配置：{describeConfig(report.config)}</p>
                 <h3 style={{ marginTop: 10 }}>规则路径</h3>
                 <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
                   {report.ruleTrace.map((t) => (
@@ -253,6 +277,8 @@ export function ClaimView({ initial }: { initial: ClaimViewData }) {
               </details>
             </section>
           )}
+
+          <DeleteClaim claimId={data.claim.id} blocked={isOwner ? deleteBlocked : '只有店主可以删除索赔数据。'} />
         </div>
 
         <aside className="side">
@@ -341,11 +367,12 @@ export function ClaimView({ initial }: { initial: ClaimViewData }) {
               followUps={data.followUps}
               actions={data.actions}
               paypal={data.paypal}
+              canConfirmFunds={isOwner}
               onDone={refresh}
             />
           )}
 
-          {data.paypal.env === 'sandbox' && data.claim.disputeId && data.claim.status !== 'closed' && (
+          {isOwner && data.paypal.env === 'sandbox' && data.claim.disputeId && data.claim.status !== 'closed' && (
             <SandboxTools claimId={id} links={data.paypal.sandboxTools} onDone={refresh} />
           )}
 
@@ -445,6 +472,12 @@ function Gallery({
             <dt>上传时间</dt>
             <dd>{fmtDateTime(selected.createdAt)}</dd>
           </div>
+          {selected.purgedAt && (
+            <div>
+              <dt>原件</dt>
+              <dd>{fmtDateTime(selected.purgedAt)} 按保留期删除</dd>
+            </div>
+          )}
           <div>
             <dt>SHA-256</dt>
             <dd className="mono" title={selected.sha256}>

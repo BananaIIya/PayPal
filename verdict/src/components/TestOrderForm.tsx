@@ -34,7 +34,7 @@ export function TestOrderForm({ products }: { products: { key: string; title: st
     <section className="card card-pad" style={{ marginBottom: 14 }}>
       <h2>沙箱测试下单</h2>
       <p className="muted" style={{ marginBottom: 10 }}>
-        会跳转到 PayPal 沙箱，用你的沙箱个人账户付款，全程是测试资金。付款后用同一个账户开争议，Verdict 会自动同步过来。
+        会跳转到 PayPal 沙箱，用你的沙箱个人账户付款，全程是测试资金。付款方式请选 Visa：默认的银行账户走 eCheck，款项会一直待处理，部分退款和多数争议选项都测不了。付款后用同一个账户开争议，Verdict 会自动同步过来。
       </p>
       <form className="row" onSubmit={submit}>
         <select value={productKey} onChange={(e) => setProductKey(e.target.value)} aria-label="测试商品" style={{ width: 'auto' }}>

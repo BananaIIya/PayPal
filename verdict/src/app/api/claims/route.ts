@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ClaimType } from '@/core/types';
 import { ready } from '@/server/bootstrap';
+import { authorize } from '@/server/guard';
 import { createClaim } from '@/server/ingest';
 import { startAnalysis } from '@/server/pipeline';
 import { addEvidence, addTimeline, getOrder, listClaims } from '@/server/repo';
@@ -8,8 +9,10 @@ import { MAX_UPLOAD_BYTES, sniffImageType } from '@/server/storage';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   await ready();
+  const auth = authorize(req);
+  if (auth instanceof NextResponse) return auth;
   return NextResponse.json({ claims: listClaims() });
 }
 
@@ -18,6 +21,8 @@ const TYPES: ClaimType[] = ['not_received', 'damaged', 'not_as_described', 'miss
 /** 商家手动导入买家私下发来的照片和截图。 */
 export async function POST(req: NextRequest) {
   await ready();
+  const auth = authorize(req, { write: true });
+  if (auth instanceof NextResponse) return auth;
   const form = await req.formData();
   const orderId = String(form.get('orderId') ?? '');
   const type = String(form.get('claimType') ?? '') as ClaimType;

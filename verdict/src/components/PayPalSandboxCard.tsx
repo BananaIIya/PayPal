@@ -54,7 +54,7 @@ export function PayPalSandboxCard(p: {
     <section className="card card-pad">
       <h2>PayPal 沙箱</h2>
       {status.state === 'off' && (
-        <p className="muted">还没有配置。在 .env.local 里填 PAYPAL_ENV、PAYPAL_CLIENT_ID、PAYPAL_CLIENT_SECRET，步骤见 README。没有配置时一切走模拟器。</p>
+        <p className="muted">还没有配置。店主可以在设置页的“PayPal 凭证”里填沙箱应用的 Client ID 和 Secret，也可以写进 .env.local（步骤见 README）。没有配置时一切走模拟器。</p>
       )}
       {status.state === 'invalid' && <p className="notice notice-danger">{status.error}</p>}
       {status.state === 'ready' && (

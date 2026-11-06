@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ready } from '@/server/bootstrap';
+import { authorize } from '@/server/guard';
 import { renderReportPdf, ReportFontUnavailableError, type ReportAudience } from '@/server/report-pdf';
 
 export const dynamic = 'force-dynamic';
@@ -7,6 +8,8 @@ export const dynamic = 'force-dynamic';
 /** 导出核验报告。?audience=paypal 预览随证据提交给 PayPal 的版本。 */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   await ready();
+  const auth = authorize(req);
+  if (auth instanceof NextResponse) return auth;
   const { id } = await params;
   const audience: ReportAudience = req.nextUrl.searchParams.get('audience') === 'paypal' ? 'paypal' : 'merchant';
   try {

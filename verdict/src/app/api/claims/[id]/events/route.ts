@@ -1,5 +1,6 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { ready } from '@/server/bootstrap';
+import { authorize } from '@/server/guard';
 import { claimRuns, getClaim, latestVerdict } from '@/server/repo';
 
 export const dynamic = 'force-dynamic';
@@ -7,6 +8,8 @@ export const dynamic = 'force-dynamic';
 /** SSE：分析进度与判定变化时推送。服务端轮询数据库，不依赖进程内共享状态。 */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   await ready();
+  const auth = authorize(req);
+  if (auth instanceof NextResponse) return auth;
   const { id } = await params;
   const encoder = new TextEncoder();
   let timer: NodeJS.Timeout;

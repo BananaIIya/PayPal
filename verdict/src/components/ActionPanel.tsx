@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
-import { RETURN_ACK_TYPES, type ActionType, type ReturnAckType, type SuggestedAction, type VerdictReport } from '@/core/types';
+import { FUND_ACTIONS, RETURN_ACK_TYPES, type ActionType, type ReturnAckType, type SuggestedAction, type VerdictReport } from '@/core/types';
 import type { ClaimViewData } from '@/server/views';
 import { fmtDateTime, fmtMoney } from './format';
 
@@ -42,13 +42,15 @@ interface Props {
   followUps: SuggestedAction[];
   actions: ClaimViewData['actions'];
   paypal: ClaimViewData['paypal'];
+  /** 客服不能确认资金动作（退款、接受索赔、和解、确认收到退货）。服务端同样会拒绝。 */
+  canConfirmFunds: boolean;
   onDone: () => Promise<void>;
 }
 
 const STUCK_PENDING_MS = 2 * 60 * 1000;
 const STATUS_TEXT: Record<string, string> = { succeeded: '成功', failed: '失败', unknown: '结果不明', pending: '执行中' };
 
-export function ActionPanel({ claimId, verdictId, report, claim, order, allowed, followUps, actions, paypal, onDone }: Props) {
+export function ActionPanel({ claimId, verdictId, report, claim, order, allowed, followUps, actions, paypal, canConfirmFunds, onDone }: Props) {
   const closed = claim.status === 'closed';
   // 已结案时只剩 PayPal 仍然开放的后续操作（申诉）。
   const options = useMemo(
@@ -64,6 +66,7 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
   const [attachEvidence, setAttachEvidence] = useState(true);
   const [attachReport, setAttachReport] = useState(true);
   const [ackType, setAckType] = useState<ReturnAckType>('ITEM_RECEIVED');
+  const [withReturn, setWithReturn] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,24 +81,43 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
     setAttachEvidence(current.attachEvidence ?? true);
     setAttachReport(current.attachReport ?? false);
     setAckType(current.acknowledgementType ?? 'ITEM_RECEIVED');
+    setWithReturn(current.withReturn ?? false);
     setError(null);
   }, [current]);
 
   const isAllowed = !!current && current.type !== 'none' && allowed.includes(current.type);
+  const fundLocked = !!current && current.type !== 'none' && FUND_ACTIONS.has(current.type) && !canConfirmFunds;
+  // 只有 PayPal 争议里的和解能要求退货；PayPal 只给 REFUND_WITH_RETURN 时必须勾选。
+  const returnChoice: 'none' | 'optional' | 'required' =
+    current?.type !== 'make_offer' || !claim.disputeId || !paypal.offerTypes.includes('REFUND_WITH_RETURN')
+      ? 'none'
+      : paypal.offerTypes.includes('REFUND')
+        ? 'optional'
+        : 'required';
+  const offerWithReturn = returnChoice === 'required' || (returnChoice === 'optional' && withReturn);
+  // PayPal 不接受同一证据类型再交一次（沙箱里 INQUIRY 交过物流证据，CHARGEBACK 再交被拒）。
+  const fulfillmentUsed =
+    (current?.type === 'provide_evidence' || current?.type === 'appeal') &&
+    current.evidenceType === 'PROOF_OF_FULFILLMENT' &&
+    paypal.submittedEvidenceTypes.includes('PROOF_OF_FULFILLMENT');
+  const evidenceType = fulfillmentUsed ? 'OTHER' : current?.evidenceType;
   const unresolved = actions.find(
     (a) => a.status === 'unknown' || (a.status === 'pending' && Date.now() - new Date(a.confirmedAt).getTime() > STUCK_PENDING_MS),
   );
 
+  const reconcileLocked = !!unresolved && FUND_ACTIONS.has(unresolved.type as ActionType) && !canConfirmFunds;
+
   const payload = (current: SuggestedAction) => ({
     message: current.type === 'send_message' || current.type === 'refund' ? message : undefined,
     notes: current.type !== 'send_message' ? notes : undefined,
-    evidenceType: current.evidenceType,
+    evidenceType,
     amount: current.type === 'refund' || current.type === 'make_offer' ? Number(amount) : undefined,
     trackingNumber: current.trackingNumber,
     carrier: current.carrier,
     attachEvidence: ATTACH_TYPES.has(current.type) ? attachEvidence : undefined,
     attachReport: REPORT_TYPES.has(current.type) ? attachReport && paypal.reportAvailable : undefined,
     acknowledgementType: current.type === 'acknowledge_return_item' ? ackType : undefined,
+    withReturn: current.type === 'make_offer' && offerWithReturn ? true : undefined,
   });
 
   function openConfirm() {
@@ -180,13 +202,14 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
           PayPal 没有给出明确答复，这个动作可能已经生效。请先到 PayPal 沙箱后台核对，标记之前这笔索赔不能再执行动作，以免重复退款。
           {typeof unresolved.response?.error === 'string' && <div className="small" style={{ marginTop: 4 }}>{unresolved.response.error}</div>}
           <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn" disabled={busy} onClick={() => reconcile(unresolved.id, 'succeeded')}>
+            <button className="btn" disabled={busy || reconcileLocked} onClick={() => reconcile(unresolved.id, 'succeeded')}>
               已生效
             </button>
-            <button className="btn" disabled={busy} onClick={() => reconcile(unresolved.id, 'failed')}>
+            <button className="btn" disabled={busy || reconcileLocked} onClick={() => reconcile(unresolved.id, 'failed')}>
               没有生效
             </button>
           </div>
+          {reconcileLocked && <div className="small" style={{ marginTop: 6 }}>这是资金动作，只有店主可以核对结果。</div>}
           {!confirming && error && <div style={{ marginTop: 8 }}>{error}</div>}
         </div>
       )}
@@ -222,16 +245,36 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
             attachmentCount={paypal.attachments}
             currency={order.currency}
             maxAmount={order.amount}
+            returnChoice={returnChoice}
+            withReturn={offerWithReturn}
+            setWithReturn={setWithReturn}
+            returnAddress={paypal.returnAddress}
           />
+          {fulfillmentUsed && (
+            <p className="notice" style={{ marginBottom: 10 }}>
+              这笔争议已经提交过物流证据（PROOF_OF_FULFILLMENT），PayPal 不接受同一类型再交一次。这次按 OTHER 提交，物流单号会写进说明。
+            </p>
+          )}
           {current.paypalOperation && <div className="op-line" style={{ marginBottom: 10 }}>{current.paypalOperation}</div>}
           {current.type === 'none' ? (
             <p className="muted small">这个判定没有可以直接执行的动作。</p>
           ) : (
             <>
-              <button className={`btn ${MONEY_ACTIONS.has(current.type) ? 'btn-danger' : 'btn-primary'}`} style={{ width: '100%' }} disabled={!isAllowed || !!unresolved} onClick={openConfirm}>
+              <button className={`btn ${MONEY_ACTIONS.has(current.type) ? 'btn-danger' : 'btn-primary'}`} style={{ width: '100%' }} disabled={!isAllowed || !!unresolved || fundLocked} onClick={openConfirm}>
                 {current.label}…
               </button>
-              {!isAllowed && <p className="small muted" style={{ marginTop: 6 }}>PayPal 当前状态不允许这个动作。</p>}
+              {fundLocked && isAllowed && (
+                <p className="small muted" style={{ marginTop: 6 }}>
+                  这是资金动作，只有店主可以确认，请店主登录后执行。
+                </p>
+              )}
+              {!isAllowed && (
+                <p className="small muted" style={{ marginTop: 6 }}>
+                  {paypal.status === 'UNDER_REVIEW'
+                    ? 'PayPal 正在审核这笔争议，现在不能操作。如果刚提交过，通常半分钟左右状态会更新，到时刷新页面再试。'
+                    : 'PayPal 当前状态不允许这个动作。'}
+                </p>
+              )}
             </>
           )}
         </>
@@ -243,7 +286,10 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
           {actions.map((a) => (
             <div key={a.id} className="small" style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
               <div className="between">
-                <strong>{TYPE_LABEL[a.type] ?? a.type}</strong>
+                <strong>
+                  {TYPE_LABEL[a.type] ?? a.type}
+                  {a.response?.offer_type === 'REFUND_WITH_RETURN' ? '（要求退货）' : ''}
+                </strong>
                 <span className={`badge ${a.status === 'succeeded' ? 'level-low' : a.status === 'failed' ? 'level-high' : ''}`}>
                   {STATUS_TEXT[a.status] ?? a.status}
                 </span>
@@ -277,16 +323,22 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
                   <dt>金额</dt>
                   <dd>
                     <strong>{fmtMoney(moneyAmount, current.type === 'accept_claim' ? (paypal.currency ?? order.currency) : order.currency)}</strong>
-                    {current.type === 'make_offer' ? '（和解提议，买家接受后生效）' : ''}
+                    {current.type === 'make_offer' ? (offerWithReturn ? '（退货退款和解，买家接受并寄回后退款）' : '（和解提议，买家接受后生效）') : ''}
                   </dd>
                 </>
               )}
               <dt>收件方</dt>
               <dd>{recipient}</dd>
+              {current.type === 'make_offer' && offerWithReturn && (
+                <>
+                  <dt>退货地址</dt>
+                  <dd>{paypal.returnAddress}</dd>
+                </>
+              )}
               {(current.type === 'provide_evidence' || current.type === 'appeal') && (
                 <>
                   <dt>证据类型</dt>
-                  <dd className="mono">{current.evidenceType}</dd>
+                  <dd className="mono">{evidenceType}</dd>
                 </>
               )}
               {ATTACH_TYPES.has(current.type) && (
@@ -301,6 +353,14 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
                   <dd>
                     {ACK_LABEL[ackType]} <span className="mono small">{ackType}</span>
                   </dd>
+                  {ackType === 'ITEM_RECEIVED' && (
+                    <>
+                      <dt>资金</dt>
+                      <dd>
+                        <strong>PayPal 会按买家已接受的和解金额退款并结案</strong>（沙箱实测约 2 分钟）
+                      </dd>
+                    </>
+                  )}
                 </>
               )}
               {current.trackingNumber && (
@@ -338,7 +398,11 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
               <button className="btn" disabled={busy} onClick={() => setConfirming(false)}>
                 取消
               </button>
-              <button className={`btn ${MONEY_ACTIONS.has(current.type) ? 'btn-danger' : 'btn-primary'}`} disabled={busy} onClick={execute}>
+              <button
+                className={`btn ${MONEY_ACTIONS.has(current.type) || (current.type === 'acknowledge_return_item' && ackType === 'ITEM_RECEIVED') ? 'btn-danger' : 'btn-primary'}`}
+                disabled={busy}
+                onClick={execute}
+              >
                 {busy ? '执行中…' : '确认执行'}
               </button>
             </div>
@@ -372,6 +436,10 @@ function ActionFields(p: {
   attachmentCount: number;
   currency: string;
   maxAmount: number;
+  returnChoice: 'none' | 'optional' | 'required';
+  withReturn: boolean;
+  setWithReturn: (v: boolean) => void;
+  returnAddress: string;
 }) {
   const t = p.action.type;
   return (
@@ -381,6 +449,15 @@ function ActionFields(p: {
           金额（{p.currency}，最多 {p.maxAmount.toFixed(2)}）
           <input type="number" min="0.01" step="0.01" max={p.maxAmount} value={p.amount} onChange={(e) => p.setAmount(e.target.value)} />
         </label>
+      )}
+      {p.returnChoice !== 'none' && (
+        <div className="field">
+          <label className="row">
+            <input type="checkbox" checked={p.withReturn} disabled={p.returnChoice === 'required'} onChange={(e) => p.setWithReturn(e.target.checked)} />
+            {p.returnChoice === 'required' ? '要求买家先退货（这笔争议 PayPal 只接受退货退款和解）' : '要求买家先退货，收到退货后再退款'}
+          </label>
+          {p.withReturn && <span className="muted small" style={{ display: 'block' }}>退货地址：{p.returnAddress}（设置页可查看）</span>}
+        </div>
       )}
       {(t === 'send_message' || t === 'refund') && (
         <label className="field">

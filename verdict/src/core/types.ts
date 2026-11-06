@@ -79,9 +79,29 @@ export type ActionType =
   /** PayPal 判买家胜诉后申诉。 */
   | 'appeal';
 
+/** 控制台角色。开发文档：退款、接受索赔等资金动作仅所有者可确认。 */
+export type Role = 'owner' | 'agent';
+export const ROLE_LABEL: Record<Role, string> = { owner: '店主', agent: '客服' };
+
+/**
+ * 会让钱离开商家的动作，只有店主能确认。
+ * 确认收到退货也算：确认后 PayPal 会把钱退给买家。
+ */
+export const FUND_ACTIONS: ReadonlySet<ActionType> = new Set<ActionType>(['refund', 'accept_claim', 'make_offer', 'acknowledge_return_item']);
+
 /** acknowledge-return-item 的 acknowledgement_type。 */
 export const RETURN_ACK_TYPES = ['ITEM_RECEIVED', 'ITEM_NOT_RECEIVED', 'DAMAGED', 'EMPTY_PACKAGE_OR_DIFFERENT', 'MISSING_ITEMS'] as const;
 export type ReturnAckType = (typeof RETURN_ACK_TYPES)[number];
+
+/** 退货退款和解时告诉买家寄回到哪里，字段对齐 PayPal 的 address_portable。 */
+export interface ReturnAddress {
+  line1: string;
+  line2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  countryCode: string;
+}
 
 export interface CategoryPolicy {
   category: string;
@@ -172,6 +192,8 @@ export interface SuggestedAction {
   notes?: string;
   evidenceType?: 'OTHER' | 'PROOF_OF_FULFILLMENT';
   offerAmount?: number;
+  /** 和解时要求买家先把商品寄回（PayPal 的 REFUND_WITH_RETURN）。 */
+  withReturn?: boolean;
   refundAmount?: number;
   trackingNumber?: string;
   carrier?: string;
@@ -202,4 +224,6 @@ export interface VerdictReport {
   ruleTrace: string[];
   merchantFactors: MerchantRiskFactors;
   rulesVersion: string;
+  /** 这次判定用的权重与阈值，审计记录要能看出当时按什么配置算的。 */
+  config: EngineConfig;
 }

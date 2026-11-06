@@ -1,9 +1,10 @@
 // 数据访问。页面、API 和管线共用，返回给前端的都是普通 JSON 对象。
-import type { AnalyzerName, AnalyzerRun, CategoryPolicy, ClaimOrigin, ClaimStatus, ClaimType, Layer, Signal, SourceMark, VerdictLevel, VerdictReport } from '@/core/types';
-import { SOURCE_LAYER } from '@/core/catalog';
+import type { AnalyzerName, AnalyzerRun, CategoryPolicy, ClaimOrigin, ClaimStatus, ClaimType, EngineConfig, Layer, ReturnAddress, Signal, SourceMark, Strength, VerdictLevel, VerdictReport } from '@/core/types';
+import { DEFAULT_CONFIG, layerWeights, SOURCE_LAYER, sourceWeightsFromLayers, type LayerGroup } from '@/core/catalog';
 import type { EvidenceRow, OrderItem, OrderView } from '@/analyzers';
 import type { PayPalEnv } from '@/paypal/client';
 import type { TrackingResult } from '@/providers/types';
+import { actorLabel } from './auth';
 import { db, json, newId, nowIso } from './db';
 import { perceptualHash, saveFile } from './storage';
 
@@ -72,6 +73,68 @@ export function toOrderView(row: OrderRow): OrderView {
     shippedWeightG: row.shipped_weight_g,
     createdAt: row.created_at,
   };
+}
+
+/** 演示店铺的退货仓地址。商家设置里没有填写时用它，地址是虚构的。 */
+export const DEMO_RETURN_ADDRESS: ReturnAddress = {
+  line1: '100 Demo Warehouse Way',
+  line2: 'Dock 3',
+  city: 'San Jose',
+  state: 'CA',
+  postalCode: '95134',
+  countryCode: 'US',
+};
+
+/** merchants.settings 里存的内容。没填的项用默认值，所以每一项都是可选的。 */
+export interface StoredSettings {
+  engine?: {
+    strengthWeight?: Record<Strength, number>;
+    layerWeight?: Record<LayerGroup, number>;
+    riskMedium?: number;
+    riskHigh?: number;
+    minDataConfidence?: number;
+    merchantRiskHigh?: number;
+  };
+  returnAddress?: ReturnAddress;
+  /** 已结案索赔的证据原件保留天数；没有设置时不自动删除。 */
+  retentionDays?: number | null;
+}
+
+/** MVP 只有一个商家。 */
+export function defaultMerchantId(): string | null {
+  const row = db().prepare('SELECT id FROM merchants ORDER BY rowid LIMIT 1').get() as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+export function merchantSettings(merchantId: string): StoredSettings {
+  const row = db().prepare('SELECT settings FROM merchants WHERE id = ?').get(merchantId) as { settings: string } | undefined;
+  return json<StoredSettings>(row?.settings, {});
+}
+
+export function saveMerchantSettings(merchantId: string, settings: StoredSettings): void {
+  db().prepare('UPDATE merchants SET settings = ? WHERE id = ?').run(JSON.stringify(settings), merchantId);
+}
+
+/** 判定引擎用的权重与阈值：商家设置覆盖默认值。 */
+export function merchantEngineConfig(merchantId: string): EngineConfig {
+  const saved = merchantSettings(merchantId).engine ?? {};
+  return {
+    strengthWeight: { ...DEFAULT_CONFIG.strengthWeight, ...saved.strengthWeight },
+    sourceWeight: sourceWeightsFromLayers({ ...layerWeights(DEFAULT_CONFIG), ...saved.layerWeight }),
+    riskMedium: saved.riskMedium ?? DEFAULT_CONFIG.riskMedium,
+    riskHigh: saved.riskHigh ?? DEFAULT_CONFIG.riskHigh,
+    minDataConfidence: saved.minDataConfidence ?? DEFAULT_CONFIG.minDataConfidence,
+    merchantRiskHigh: saved.merchantRiskHigh ?? DEFAULT_CONFIG.merchantRiskHigh,
+  };
+}
+
+export function merchantReturnAddress(merchantId: string): ReturnAddress {
+  const saved = merchantSettings(merchantId).returnAddress;
+  return saved?.line1 && saved.city && saved.postalCode && saved.countryCode ? saved : DEMO_RETURN_ADDRESS;
+}
+
+export function formatReturnAddress(a: ReturnAddress): string {
+  return [a.line1, a.line2, `${a.city}, ${a.state} ${a.postalCode}`, a.countryCode].filter(Boolean).join(', ');
 }
 
 export function getOrder(id: string): OrderRow | undefined {
@@ -251,6 +314,7 @@ function publicEvidence(row: EvidenceRow) {
     shotLabel: row.shot_label,
     sha256: row.sha256,
     createdAt: row.created_at,
+    purgedAt: row.purged_at ?? null,
     captureMeta: json<Record<string, unknown> | null>(r.capture_meta, null),
     challenge: challenge ?? null,
   };
@@ -300,7 +364,7 @@ export function claimDetail(id: string) {
       id: a.id,
       type: a.type,
       status: a.status,
-      confirmedBy: a.confirmed_by,
+      confirmedBy: actorLabel(a.confirmed_by),
       confirmedAt: a.confirmed_at,
       payload: json<Record<string, unknown>>(a.payload, {}),
       response: json<Record<string, unknown> | null>(a.paypal_response, null),

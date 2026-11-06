@@ -1,7 +1,7 @@
 // PayPal 接口的抽象。有两个实现：simulator（演示数据）和 sandbox（真实沙箱）。
 // 一笔订单走哪个实现由 orders.paypal_env 决定，模拟数据不会发往沙箱，沙箱数据也不会落到模拟器。
 // 写接口只有动作执行器（server/actions.ts）可以调用。
-import type { ActionType, ReturnAckType } from '@/core/types';
+import type { ActionType, ReturnAckType, ReturnAddress } from '@/core/types';
 
 export type PayPalEnv = 'simulator' | 'sandbox';
 
@@ -30,6 +30,8 @@ export interface DisputeView {
   /** 由 HATEOAS 链接和 allowed_response_options 得出。 */
   allowedActions: ActionType[];
   offerTypes: string[];
+  /** 商家已经提交过的证据类型。PayPal 不接受同一类型再交一次。 */
+  submittedEvidenceTypes: string[];
   outcome: string | null;
   /** 只有沙箱才有的测试接口，PayPal 给了链接才可用。 */
   sandboxTools: { requireEvidence: boolean; adjudicate: boolean };
@@ -80,6 +82,13 @@ export interface EvidenceInput {
   carrier?: string;
 }
 
+export interface OfferInput {
+  amount: number;
+  currency: string;
+  note: string;
+  returnAddress?: ReturnAddress;
+}
+
 export interface PayPalClient {
   readonly name: string;
   getDispute(id: string, opts?: { fresh?: boolean }): Promise<DisputeView | null>;
@@ -88,7 +97,8 @@ export interface PayPalClient {
   provideSupportingInfo(disputeId: string, input: { notes: string; documents: PayPalDocument[] }, requestId: string): Promise<PayPalWriteResult>;
   acknowledgeReturnItem(disputeId: string, input: { note: string; acknowledgementType: ReturnAckType }, requestId: string): Promise<PayPalWriteResult>;
   appealDispute(disputeId: string, input: EvidenceInput, requestId: string): Promise<PayPalWriteResult>;
-  makeOffer(disputeId: string, input: { amount: number; currency: string; note: string }, requestId: string): Promise<PayPalWriteResult>;
+  /** 带 returnAddress 时是退货退款和解（REFUND_WITH_RETURN），否则是直接退款和解（REFUND）。 */
+  makeOffer(disputeId: string, input: OfferInput, requestId: string): Promise<PayPalWriteResult>;
   acceptClaim(disputeId: string, note: string, requestId: string): Promise<PayPalWriteResult>;
   escalate(disputeId: string, note: string, requestId: string): Promise<PayPalWriteResult>;
   refundCapture(captureId: string, input: { amount: number; currency: string }, requestId: string): Promise<PayPalWriteResult>;

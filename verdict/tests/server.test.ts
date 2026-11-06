@@ -28,7 +28,7 @@ function req(d: ReturnType<typeof claimByScenario>, over: Partial<import('@/serv
     verdictId: d.verdict!.id,
     confirm: true,
     idempotencyKey: crypto.randomUUID(),
-    confirmedBy: 'demo-owner',
+    actor: { id: 'demo-owner', role: 'owner' as const },
     origin: 'http://localhost:3000',
     payload: { message: '您好，请补充照片。' },
     ...over,
@@ -67,13 +67,31 @@ describe('动作执行器', () => {
 
   it('缺少确认人时拒绝', async () => {
     const d = claimByScenario('insufficient');
-    expect((await actions.executeAction(req(d, { confirmedBy: '' }))).status).toBe(401);
+    expect((await actions.executeAction(req(d, { actor: { id: '', role: 'owner' } }))).status).toBe(401);
   });
 
   it('金额超过订单金额时拒绝', async () => {
     const d = claimByScenario('partial_missing');
     const res = await actions.executeAction(req(d, { type: 'make_offer', payload: { amount: 9999, notes: 'x' } }));
     expect(res.status).toBe(400);
+  });
+
+  it('要求退货的和解把商家退货地址带给 PayPal；没有争议时不能要求退货', async () => {
+    const d = claimByScenario('partial_missing');
+    expect(d.claim.disputeId).toBeTruthy();
+    const res = await actions.executeAction(req(d, { type: 'make_offer', payload: { amount: 10, notes: '请寄回后退款', withReturn: true } }));
+    expect(res.status).toBe(200);
+    const sent = res.body.response as { offer_type: string; return_shipping_address: unknown };
+    expect(sent.offer_type).toBe('REFUND_WITH_RETURN');
+    expect(sent.return_shipping_address).toEqual(repo.DEMO_RETURN_ADDRESS);
+    expect(repo.claimTimeline(d.claim.id).some((t) => t.title === '商家提出退货退款')).toBe(true);
+
+    // 没有争议的订单，和解走部分退款，没有退货这一步。
+    const portal = claimByScenario('genuine_damage');
+    expect(portal.claim.disputeId).toBeFalsy();
+    const bad = await actions.executeAction(req(portal, { type: 'make_offer', payload: { amount: 1, notes: 'x', withReturn: true } }));
+    expect(bad.status).toBe(400);
+    expect(repo.claimActions(portal.claim.id)).toHaveLength(0);
   });
 
   it('消息里的占位符替换成一次性索赔页链接，token 可以验证', async () => {
@@ -343,6 +361,23 @@ describe('核验报告 PDF', () => {
     expect(reportPdf.visibleFindings(report, 'merchant')).toContain(behavior);
     expect(reportPdf.visibleFindings(report, 'paypal').some((f) => f.analyzer === 'behavior')).toBe(false);
     expect(reportPdf.visibleFindings(report, 'paypal')).toHaveLength(base.findings.filter((f) => f.analyzer !== 'behavior').length);
+  });
+
+  it('中文标点用横排字形，不被换成竖排的 ︵︶', async () => {
+    const reportPdf = await import('@/server/report-pdf');
+    const font = reportPdf.findReportFont();
+    if (!font) return;
+    const { createRequire } = await import('node:module');
+    const fontkit = createRequire(import.meta.url)('fontkit') as {
+      openSync(path: string, family?: string): {
+        glyphForCodePoint(cp: number): { id: number };
+        layout(text: string, features?: unknown): { glyphs: { id: number }[] };
+      };
+    };
+    const f = fontkit.openSync(font.path, font.family);
+    const text = '（测试）：，。、';
+    const plain = [...text].map((c) => f.glyphForCodePoint(c.codePointAt(0)!).id);
+    expect(f.layout(text, reportPdf.horizontalFeatures()).glyphs.map((g) => g.id)).toEqual(plain);
   });
 
   it('没有判定的索赔返回 null', async () => {
