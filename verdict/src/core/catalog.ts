@@ -100,7 +100,7 @@ export function describeConfig(cfg: EngineConfig | undefined): string {
   const s = cfg.strengthWeight;
   const l = layerWeights(cfg);
   return [
-    isDefaultConfig(cfg) ? '默认配置' : '商家自定义',
+    cfg.scope ? `类目“${CATEGORY_LABEL[cfg.scope] ?? cfg.scope}”专用配置` : isDefaultConfig(cfg) ? '默认配置' : '商家自定义',
     `强度 ${s.strong}/${s.moderate}/${s.weak}`,
     `层级 ${l.ab}/${l.cPaypal}/${l.cUploaded}/${l.d}`,
     `风险阈值 ${cfg.riskMedium}/${cfg.riskHigh}`,

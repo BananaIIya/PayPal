@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeConfig } from '@/core/catalog';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verdict-settings-test-'));
 process.env.VERDICT_DATA_DIR = dir;
@@ -148,6 +149,59 @@ describe('保存设置', () => {
       policies: [{ category: '../x', returnable: true, perishable: false, safetySensitive: false, identityRequired: false }],
     });
     expect(res.ok).toBe(false);
+  });
+
+  it('类目专用配置只作用于这个类目的索赔，审计记录写明范围；删掉后回到商家默认', () => {
+    const open = db
+      .db()
+      .prepare("SELECT c.id, o.category FROM claims c JOIN orders o ON o.id = c.order_id WHERE c.status != 'closed'")
+      .all() as unknown as { id: string; category: string }[];
+    const withVerdict = open.filter((c) => repo.latestVerdict(c.id));
+    const category = withVerdict[0].category;
+    const others = withVerdict.filter((c) => c.category !== category);
+    expect(others.length).toBeGreaterThan(0);
+    const before = latestByClaim();
+
+    const res = settings.updateSettings(merchantId, { categoryEngine: { category, engine: engine({ riskMedium: 0.2, riskHigh: 0.4 }) } });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // 商家默认没变；只重新判定这个类目的索赔。
+    expect(res.view.customized).toBe(false);
+    expect(res.recomputed).toBe(open.filter((c) => c.category === category).length);
+    expect(res.view.categoryEngine.map((c) => c.category)).toEqual([category]);
+    expect(res.view.categoryEngine[0].engine.riskHigh).toBe(0.4);
+
+    for (const c of withVerdict) {
+      const cfg = JSON.parse(repo.latestVerdict(c.id)!.report).config;
+      if (c.category === category) {
+        expect(cfg.scope).toBe(category);
+        expect(cfg.riskHigh).toBe(0.4);
+      } else {
+        expect(cfg.scope).toBeUndefined();
+        expect(repo.latestVerdict(c.id)!.id).toBe(before.get(c.id)!.id);
+      }
+    }
+    expect(describeConfig(repo.engineConfigFor(merchantId, category))).toContain('专用配置');
+
+    // 改商家默认不影响有专用配置的类目。
+    settings.updateSettings(merchantId, { engine: engine({ riskMedium: 5, riskHigh: 9 }) });
+    expect(repo.engineConfigFor(merchantId, category).riskHigh).toBe(0.4);
+    expect(repo.engineConfigFor(merchantId, others[0].category).riskHigh).toBe(9);
+    settings.updateSettings(merchantId, { engine: null });
+
+    const removed = settings.updateSettings(merchantId, { categoryEngine: { category, engine: null } });
+    expect(removed.ok && removed.view.categoryEngine).toEqual([]);
+    expect(repo.merchantSettings(merchantId).categoryEngine).toBeUndefined();
+    const restored = latestByClaim();
+    for (const [id, b] of before) expect(restored.get(id)!.level).toBe(b.level);
+    expect(JSON.parse(repo.latestVerdict(withVerdict[0].id)!.report).config.scope).toBeUndefined();
+  });
+
+  it('类目专用配置的类目名称无效或权重不合法时拒绝', () => {
+    expect(settings.updateSettings(merchantId, { categoryEngine: { category: '../x', engine: engine() } }).ok).toBe(false);
+    const bad = settings.updateSettings(merchantId, { categoryEngine: { category: 'fresh', engine: engine({ riskMedium: 3, riskHigh: 2 }) } });
+    expect(bad.ok).toBe(false);
+    expect(settings.settingsView(merchantId).categoryEngine).toEqual([]);
   });
 
   it('设置没有实质变化时不重新判定', () => {

@@ -12,12 +12,12 @@ import {
   claimEvidence,
   claimRuns,
   claimSignals,
+  engineConfigFor,
   getClaim,
   getOrder,
   getPolicy,
   getTracking,
   latestVerdict,
-  merchantEngineConfig,
   orderReferences,
   toOrderView,
   type ClaimRow,
@@ -222,7 +222,7 @@ export function recompute(claimId: string): void {
     runs: claimRuns(claimId),
     hasReference: references.length > 0,
     merchantFactors: merchantFactors(claim, order),
-    config: merchantEngineConfig(claim.merchant_id),
+    config: engineConfigFor(claim.merchant_id, order.category),
   };
   const report = decide(input);
 

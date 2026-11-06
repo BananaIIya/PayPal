@@ -226,6 +226,8 @@ export function db(): DatabaseSync {
     ensureColumn(conn, 'claims', 'paypal_status', 'paypal_status TEXT');
     // 证据原件按保留期删除后记下时间；行和哈希保留，复用检测和审计仍然可用。
     ensureColumn(conn, 'evidence', 'purged_at', 'purged_at TEXT');
+    // 影子模式下执行的动作：处理人员当时看不到判定，事后拿来和判定对照。
+    ensureColumn(conn, 'actions', 'shadow', 'shadow INTEGER NOT NULL DEFAULT 0');
     g.__verdictDb = conn;
   }
   return g.__verdictDb;

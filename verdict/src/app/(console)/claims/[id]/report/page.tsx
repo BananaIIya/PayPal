@@ -18,6 +18,19 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   const { id } = await params;
   const v = await claimView(id);
   if (!v || !v.verdict) notFound();
+  if (!v.verdict.report) {
+    return (
+      <div className="report">
+        <p className="no-print" style={{ marginBottom: 16 }}>
+          <Link href={`/claims/${id}`}>← 返回索赔</Link>
+        </p>
+        <div className="card card-pad">
+          <h1>核验报告</h1>
+          <p className="muted">现在是影子模式：判定照常计算并存档，但不给处理人员看，所以也不出报告。店主可以在设置页关闭影子模式。</p>
+        </div>
+      </div>
+    );
+  }
   const r = v.verdict.report;
   const action = r.primaryAction;
   const evidenceById = new Map(v.evidence.map((e) => [e.id, e]));

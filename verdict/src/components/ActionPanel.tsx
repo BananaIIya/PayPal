@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
-import { FUND_ACTIONS, RETURN_ACK_TYPES, type ActionType, type ReturnAckType, type SuggestedAction, type VerdictReport } from '@/core/types';
+import { FUND_ACTIONS, RETURN_ACK_TYPES, type ActionType, type ReturnAckType, type SuggestedAction } from '@/core/types';
 import type { ClaimViewData } from '@/server/views';
 import { fmtDateTime, fmtMoney } from './format';
 
@@ -35,11 +35,13 @@ const MONEY_ACTIONS = new Set(['refund', 'accept_claim', 'make_offer']);
 interface Props {
   claimId: string;
   verdictId: string;
-  report: VerdictReport;
+  /** 第一项是判定建议（影子模式下没有建议，全是中性选项）。由服务端按判定和 PayPal 状态生成。 */
+  options: SuggestedAction[];
+  /** 影子模式：不显示“建议”，不附报告和自动挑选的证据。 */
+  shadow: boolean;
   claim: ClaimViewData['claim'];
   order: ClaimViewData['order'];
   allowed: ActionType[];
-  followUps: SuggestedAction[];
   actions: ClaimViewData['actions'];
   paypal: ClaimViewData['paypal'];
   /** 客服不能确认资金动作（退款、接受索赔、和解、确认收到退货）。服务端同样会拒绝。 */
@@ -50,13 +52,7 @@ interface Props {
 const STUCK_PENDING_MS = 2 * 60 * 1000;
 const STATUS_TEXT: Record<string, string> = { succeeded: '成功', failed: '失败', unknown: '结果不明', pending: '执行中' };
 
-export function ActionPanel({ claimId, verdictId, report, claim, order, allowed, followUps, actions, paypal, canConfirmFunds, onDone }: Props) {
-  const closed = claim.status === 'closed';
-  // 已结案时只剩 PayPal 仍然开放的后续操作（申诉）。
-  const options = useMemo(
-    () => (closed ? followUps : [report.primaryAction, ...report.alternatives, ...followUps]),
-    [closed, report, followUps],
-  );
+export function ActionPanel({ claimId, verdictId, options, shadow, claim, order, allowed, actions, paypal, canConfirmFunds, onDone }: Props) {
   const [index, setIndex] = useState(0);
   const current: SuggestedAction | undefined = options[index] ?? options[0];
 
@@ -195,7 +191,7 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
 
   return (
     <section className="card card-pad action-card">
-      <h2>建议动作</h2>
+      <h2>{shadow ? '动作' : '建议动作'}</h2>
       {unresolved && (
         <div className="notice notice-danger" style={{ marginBottom: 12 }}>
           <strong>{TYPE_LABEL[unresolved.type] ?? unresolved.type}的结果不明。</strong>
@@ -217,13 +213,13 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
         <div className="action-tabs" role="group" aria-label="选择动作">
           {options.map((o, i) => (
             <button key={`${o.type}-${o.label}`} className="action-tab" aria-pressed={i === index} onClick={() => setIndex(i)}>
-              {i === 0 ? `建议：${o.label}` : o.label}
+              {i === 0 && !shadow ? `建议：${o.label}` : o.label}
             </button>
           ))}
         </div>
       )}
       {!current ? (
-        <p className="muted">这笔索赔已结案。</p>
+        <p className="muted">{claim.status === 'closed' ? '这笔索赔已结案。' : 'PayPal 当前没有可以执行的动作。'}</p>
       ) : (
         <>
           <p style={{ marginBottom: 10 }}>{current.reason}</p>
@@ -249,6 +245,7 @@ export function ActionPanel({ claimId, verdictId, report, claim, order, allowed,
             withReturn={offerWithReturn}
             setWithReturn={setWithReturn}
             returnAddress={paypal.returnAddress}
+            shadow={shadow}
           />
           {fulfillmentUsed && (
             <p className="notice" style={{ marginBottom: 10 }}>
@@ -440,6 +437,7 @@ function ActionFields(p: {
   withReturn: boolean;
   setWithReturn: (v: boolean) => void;
   returnAddress: string;
+  shadow: boolean;
 }) {
   const t = p.action.type;
   return (
@@ -488,13 +486,18 @@ function ActionFields(p: {
           <textarea rows={t === 'accept_claim' || t === 'acknowledge_return_item' ? 2 : 5} value={p.notes} onChange={(e) => p.setNotes(e.target.value)} />
         </label>
       )}
-      {REPORT_TYPES.has(t) && (
+      {p.shadow && ATTACH_TYPES.has(t) && (
+        <p className="muted small" style={{ marginBottom: 12 }}>
+          影子模式下不附核验报告，也不自动挑选证据图片（两者都会透露判定）。需要附件的话请在 PayPal 后台手动上传。
+        </p>
+      )}
+      {!p.shadow && REPORT_TYPES.has(t) && (
         <label className="row" style={{ marginBottom: 6 }}>
           <input type="checkbox" checked={p.attachReport && p.reportAvailable} disabled={!p.reportAvailable} onChange={(e) => p.setAttachReport(e.target.checked)} />
           {p.reportAvailable ? '附核验报告 PDF（提交版，不含内部风险标记和草稿）' : '服务器缺少中文字体，无法生成报告 PDF'}
         </label>
       )}
-      {ATTACH_TYPES.has(t) && (
+      {!p.shadow && ATTACH_TYPES.has(t) && (
         <label className="row" style={{ marginBottom: 12 }}>
           <input type="checkbox" checked={p.attachEvidence} disabled={p.attachmentCount === 0} onChange={(e) => p.setAttachEvidence(e.target.checked)} />
           {p.attachmentCount > 0 ? `附关键证据图片（${p.attachmentCount} 张）` : '没有可以附上的证据图片'}

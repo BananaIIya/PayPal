@@ -19,7 +19,8 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'low', label: '低风险' },
 ];
 
-export function ClaimList({ claims }: { claims: ClaimListItem[] }) {
+/** shadow：影子模式下没有判定可筛选，也不显示判定列。 */
+export function ClaimList({ claims, shadow = false }: { claims: ClaimListItem[]; shadow?: boolean }) {
   const router = useRouter();
   const [filter, setFilter] = useState<Filter>('all');
   const shown = useMemo(
@@ -35,7 +36,7 @@ export function ClaimList({ claims }: { claims: ClaimListItem[] }) {
   return (
     <>
       <div className="filters" role="group" aria-label="筛选">
-        {FILTERS.map((f) => (
+        {(shadow ? FILTERS.filter((f) => f.id === 'all' || f.id === 'open') : FILTERS).map((f) => (
           <button key={f.id} className="chip" aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>
             {f.label}
             <span className="muted num">
@@ -56,8 +57,8 @@ export function ClaimList({ claims }: { claims: ClaimListItem[] }) {
               <th>订单</th>
               <th>索赔类型</th>
               <th>来源</th>
-              <th>判定</th>
-              <th title="买家侧风险 R / 数据置信度 Q / 商家侧风险 M">R / Q / M</th>
+              {!shadow && <th>判定</th>}
+              {!shadow && <th title="买家侧风险 R / 数据置信度 Q / 商家侧风险 M">R / Q / M</th>}
               <th>PayPal 截止</th>
               <th>状态</th>
             </tr>
@@ -82,15 +83,19 @@ export function ClaimList({ claims }: { claims: ClaimListItem[] }) {
                   </td>
                   <td>{CLAIM_TYPE_LABEL[c.type]}</td>
                   <td>{ORIGIN_LABEL[c.origin]}</td>
-                  <td>
-                    <div className="row">
-                      {c.level ? <span className={`badge level level-${c.level}`}>{LEVEL_LABEL[c.level]}</span> : <span className="muted">—</span>}
-                      {c.incomplete && c.status !== 'collecting' && <span className="badge badge-warn">核验不完整</span>}
-                    </div>
-                  </td>
-                  <td className="num">
-                    {fmtScore(c.score)} / {fmtScore(c.dataConfidence)} / {fmtScore(c.merchantRisk)}
-                  </td>
+                  {!shadow && (
+                    <td>
+                      <div className="row">
+                        {c.level ? <span className={`badge level level-${c.level}`}>{LEVEL_LABEL[c.level]}</span> : <span className="muted">—</span>}
+                        {c.incomplete && c.status !== 'collecting' && <span className="badge badge-warn">核验不完整</span>}
+                      </div>
+                    </td>
+                  )}
+                  {!shadow && (
+                    <td className="num">
+                      {fmtScore(c.score)} / {fmtScore(c.dataConfidence)} / {fmtScore(c.merchantRisk)}
+                    </td>
+                  )}
                   <td className={due.soon ? 'due-soon' : undefined} suppressHydrationWarning>
                     {due.text}
                   </td>
@@ -100,7 +105,7 @@ export function ClaimList({ claims }: { claims: ClaimListItem[] }) {
             })}
             {shown.length === 0 && (
               <tr>
-                <td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 28 }}>
+                <td colSpan={shadow ? 5 : 7} className="muted" style={{ textAlign: 'center', padding: 28 }}>
                   没有符合条件的索赔
                 </td>
               </tr>

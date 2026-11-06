@@ -95,10 +95,16 @@ export interface StoredSettings {
     minDataConfidence?: number;
     merchantRiskHigh?: number;
   };
+  /** 按类目单独配置的权重与阈值，key 是类目。没有配置的类目用上面的 engine。 */
+  categoryEngine?: Record<string, StoredEngine>;
   returnAddress?: ReturnAddress;
   /** 已结案索赔的证据原件保留天数；没有设置时不自动删除。 */
   retentionDays?: number | null;
+  /** 影子模式：判定照常计算并记录，但不给处理人员看，用来上线前对照人工决定。 */
+  shadowMode?: boolean;
 }
+
+export type StoredEngine = NonNullable<StoredSettings['engine']>;
 
 /** MVP 只有一个商家。 */
 export function defaultMerchantId(): string | null {
@@ -115,17 +121,32 @@ export function saveMerchantSettings(merchantId: string, settings: StoredSetting
   db().prepare('UPDATE merchants SET settings = ? WHERE id = ?').run(JSON.stringify(settings), merchantId);
 }
 
-/** 判定引擎用的权重与阈值：商家设置覆盖默认值。 */
-export function merchantEngineConfig(merchantId: string): EngineConfig {
-  const saved = merchantSettings(merchantId).engine ?? {};
+function layerConfig(saved: StoredEngine, base: EngineConfig): EngineConfig {
   return {
-    strengthWeight: { ...DEFAULT_CONFIG.strengthWeight, ...saved.strengthWeight },
-    sourceWeight: sourceWeightsFromLayers({ ...layerWeights(DEFAULT_CONFIG), ...saved.layerWeight }),
-    riskMedium: saved.riskMedium ?? DEFAULT_CONFIG.riskMedium,
-    riskHigh: saved.riskHigh ?? DEFAULT_CONFIG.riskHigh,
-    minDataConfidence: saved.minDataConfidence ?? DEFAULT_CONFIG.minDataConfidence,
-    merchantRiskHigh: saved.merchantRiskHigh ?? DEFAULT_CONFIG.merchantRiskHigh,
+    strengthWeight: { ...base.strengthWeight, ...saved.strengthWeight },
+    sourceWeight: sourceWeightsFromLayers({ ...layerWeights(base), ...saved.layerWeight }),
+    riskMedium: saved.riskMedium ?? base.riskMedium,
+    riskHigh: saved.riskHigh ?? base.riskHigh,
+    minDataConfidence: saved.minDataConfidence ?? base.minDataConfidence,
+    merchantRiskHigh: saved.merchantRiskHigh ?? base.merchantRiskHigh,
   };
+}
+
+/** 商家默认的权重与阈值：商家设置覆盖默认值。 */
+export function merchantEngineConfig(merchantId: string): EngineConfig {
+  return layerConfig(merchantSettings(merchantId).engine ?? {}, DEFAULT_CONFIG);
+}
+
+/** 某个类目的订单实际用的配置：有类目专用配置时用它（记下 scope），否则用商家默认。 */
+export function engineConfigFor(merchantId: string, category: string): EngineConfig {
+  const settings = merchantSettings(merchantId);
+  const own = settings.categoryEngine?.[category];
+  if (!own) return merchantEngineConfig(merchantId);
+  return { ...layerConfig(own, layerConfig(settings.engine ?? {}, DEFAULT_CONFIG)), scope: category };
+}
+
+export function shadowModeOn(merchantId: string): boolean {
+  return merchantSettings(merchantId).shadowMode === true;
 }
 
 export function merchantReturnAddress(merchantId: string): ReturnAddress {

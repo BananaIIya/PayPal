@@ -348,6 +348,16 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
                 )}
               </div>
             </section>
+          ) : data.shadow && data.verdict ? (
+            <section className="card card-pad">
+              <div className="between">
+                <h2>影子模式</h2>
+                <span className="badge badge-sim">判定已隐藏</span>
+              </div>
+              <p className="muted small">
+                判定已经在后台算好并存档，但不显示给处理人员。请根据证据、订单和买家陈述自己决定；你的决定会和判定对照，店主在“影子对照”页查看一致率。
+              </p>
+            </section>
           ) : (
             <section className="card card-pad">
               <h2>等待证据</h2>
@@ -355,16 +365,16 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
             </section>
           )}
 
-          {report && (
+          {data.verdict && (
             <ActionPanel
-              key={data.verdict!.id}
+              key={data.verdict.id}
               claimId={id}
-              verdictId={data.verdict!.id}
-              report={report}
+              verdictId={data.verdict.id}
+              options={data.actionOptions}
+              shadow={data.shadow}
               claim={data.claim}
               order={data.order}
               allowed={data.allowedActions}
-              followUps={data.followUps}
               actions={data.actions}
               paypal={data.paypal}
               canConfirmFunds={isOwner}

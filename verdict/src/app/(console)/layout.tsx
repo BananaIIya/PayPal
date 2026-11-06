@@ -24,6 +24,7 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
         <nav aria-label="主导航">
           <Link href="/claims">索赔</Link>
           <Link href="/orders">订单与留底</Link>
+          {user.role === 'owner' && <Link href="/shadow">影子对照</Link>}
           <Link href="/settings">设置</Link>
         </nav>
         <span className="sim-pill">{PILL[publicPayPalStatus().state]}</span>

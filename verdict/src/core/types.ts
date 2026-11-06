@@ -130,6 +130,8 @@ export interface EngineConfig {
   minDataConfidence: number;
   /** 文档只写“M 高”，未给数值；MVP 取 0.5，可配置。 */
   merchantRiskHigh: number;
+  /** 用了类目专用配置时记下类目，写进审计记录。商家默认配置没有这个字段。 */
+  scope?: string;
 }
 
 export interface EngineInput {

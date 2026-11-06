@@ -7,7 +7,7 @@ import { LAYER_WEIGHT_GROUPS, STRENGTH_LABEL, type LayerGroup } from '@/core/cat
 import type { ReturnAddress, Strength } from '@/core/types';
 import type { EngineSettings, PolicySettings, SettingsInput, SettingsView } from '@/server/settings';
 
-type Section = 'engine' | 'policies' | 'address' | 'retention';
+type Section = 'engine' | 'policies' | 'address' | 'retention' | 'shadow';
 interface SaveState {
   busy: boolean;
   error: string | null;
@@ -48,6 +48,15 @@ function fromDraft(d: Draft<EngineSettings>): EngineSettings {
   };
 }
 
+/** 全部类目用空串表示。 */
+const ALL = '';
+
+function engineFor(view: SettingsView, scope: string): { engine: EngineSettings; own: boolean } {
+  if (scope === ALL) return { engine: view.engine, own: view.customized };
+  const own = view.categoryEngine.find((c) => c.category === scope);
+  return own ? { engine: own.engine, own: true } : { engine: view.engine, own: false };
+}
+
 function NumberField(p: { label: string; value: string; onChange: (v: string) => void; step?: string; hint?: string }) {
   return (
     <label className="field" style={{ marginBottom: 8 }}>
@@ -81,12 +90,13 @@ function Result({ state }: { state: SaveState }) {
 export function SettingsForm({ initial, readOnly = false }: { initial: SettingsView; readOnly?: boolean }) {
   const router = useRouter();
   const [view, setView] = useState(initial);
+  const [scope, setScope] = useState(ALL);
   const [engine, setEngine] = useState(() => toDraft(initial.engine));
   const [policies, setPolicies] = useState<PolicySettings[]>(initial.policies);
   const [address, setAddress] = useState<ReturnAddress>(initial.returnAddress ?? EMPTY_ADDRESS);
   const [retain, setRetain] = useState(initial.retentionDays !== null);
   const [days, setDays] = useState(String(initial.retentionDays ?? 180));
-  const [state, setState] = useState<Record<Section, SaveState>>({ engine: IDLE, policies: IDLE, address: IDLE, retention: IDLE });
+  const [state, setState] = useState<Record<Section, SaveState>>({ engine: IDLE, policies: IDLE, address: IDLE, retention: IDLE, shadow: IDLE });
 
   async function save(section: Section, input: SettingsInput, success: string) {
     setState((s) => ({ ...s, [section]: { ...IDLE, busy: true } }));
@@ -99,7 +109,7 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
       }
       const next = body.view as SettingsView;
       setView(next);
-      setEngine(toDraft(next.engine));
+      setEngine(toDraft(engineFor(next, scope).engine));
       setPolicies(next.policies);
       setAddress(next.returnAddress ?? EMPTY_ADDRESS);
       const recomputed = body.recomputed as number;
@@ -117,6 +127,36 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
     }
   }
 
+  const scoped = engineFor(view, scope);
+  // 类目专用配置的提示值是商家默认（它从商家默认改起），全部类目的提示值是系统默认。
+  const base = scope === ALL ? view.defaults : view.engine;
+  const baseLabel = scope === ALL ? '默认' : '商家默认';
+  const scopeLabel = scope === ALL ? '' : (view.policies.find((p) => p.category === scope)?.label ?? scope);
+  const badge =
+    scope === ALL
+      ? view.customized
+        ? { cls: 'badge-accent', text: '商家自定义' }
+        : { cls: 'badge-sim', text: '默认配置' }
+      : scoped.own
+        ? { cls: 'badge-accent', text: '类目专用' }
+        : { cls: 'badge-sim', text: '沿用商家默认' };
+  const changeScope = (next: string) => {
+    setScope(next);
+    setEngine(toDraft(engineFor(view, next).engine));
+    setState((s) => ({ ...s, engine: IDLE }));
+  };
+  const saveEngine = () =>
+    scope === ALL
+      ? save('engine', { engine: fromDraft(engine) }, '已保存。')
+      : save('engine', { categoryEngine: { category: scope, engine: fromDraft(engine) } }, `已保存“${scopeLabel}”的专用配置。`);
+  const resetEngine = () => {
+    if (scope === ALL) {
+      if (window.confirm('恢复默认权重与阈值？类目专用配置不受影响。未结案的索赔会重新判定。')) void save('engine', { engine: null }, '已恢复默认。');
+    } else if (window.confirm(`删除“${scopeLabel}”的专用配置，改回商家默认？这个类目未结案的索赔会重新判定。`)) {
+      void save('engine', { categoryEngine: { category: scope, engine: null } }, `“${scopeLabel}”已改回商家默认。`);
+    }
+  };
+
   const setStrength = (k: Strength, v: string) => setEngine((e) => ({ ...e, strengthWeight: { ...e.strengthWeight, [k]: v } }));
   const setLayer = (k: LayerGroup, v: string) => setEngine((e) => ({ ...e, layerWeight: { ...e.layerWeight, [k]: v } }));
   const setPolicy = (category: string, field: keyof Omit<PolicySettings, 'category'>, v: boolean) =>
@@ -127,57 +167,96 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
       {readOnly && <p className="notice notice-info">下面的判定设置只有店主可以修改，你可以查看。</p>}
       <section className="card card-pad">
         <div className="between">
+          <h2>影子模式</h2>
+          <span className={`badge ${view.shadowMode ? 'badge-accent' : 'badge-sim'}`}>{view.shadowMode ? '已开启' : '未开启'}</span>
+        </div>
+        <p className="muted small" style={{ marginBottom: 10 }}>
+          正式启用前先跑一段时间：判定照常计算并存档，但索赔列表、详情和报告里都不显示判定、分数、发现和建议，动作面板只列 PayPal 允许的操作，也不自动附报告和证据。处理人员按自己的判断处理，每个决定都会和当时的判定对照。
+        </p>
+        <div className="row">
+          <button
+            className="btn btn-primary"
+            disabled={state.shadow.busy}
+            onClick={() => save('shadow', { shadowMode: !view.shadowMode }, view.shadowMode ? '影子模式已关闭，判定重新显示。' : '影子模式已开启。')}
+          >
+            {state.shadow.busy ? '保存中…' : view.shadowMode ? '关闭影子模式' : '开启影子模式'}
+          </button>
+          {!readOnly && (
+            <Link className="btn" href="/shadow">
+              查看影子对照
+            </Link>
+          )}
+        </div>
+        <Result state={state.shadow} />
+      </section>
+      <section className="card card-pad">
+        <div className="between">
           <h2>判定权重与阈值</h2>
-          <span className={`badge ${view.customized ? 'badge-accent' : 'badge-sim'}`}>{view.customized ? '商家自定义' : '默认配置'}</span>
+          <span className={`badge ${badge.cls}`}>{badge.text}</span>
         </div>
         <p className="muted small" style={{ marginBottom: 12 }}>
-          买家侧风险 R = Σ 方向 × 强度权重 × 置信度 × 层级权重。硬规则信号（比如带 AI 来源标识、序列号不符）不受这里影响，出现就判高风险。保存后所有未结案的索赔会按新配置重新判定；已结案的保留当时的判定。
+          买家侧风险 R = Σ 方向 × 强度权重 × 置信度 × 层级权重。硬规则信号（比如带 AI 来源标识、序列号不符）不受这里影响，出现就判高风险。可以给某个类目单独配置，比如生鲜的 Q 阈值放低、电子产品的高风险阈值收紧；没有单独配置的类目用商家默认。保存后未结案的索赔会按新配置重新判定；已结案的保留当时的判定。
         </p>
+        <label className="field" style={{ maxWidth: 360 }}>
+          适用范围
+          <select value={scope} onChange={(e) => changeScope(e.target.value)}>
+            <option value={ALL}>所有类目（商家默认）</option>
+            {[...new Set([...view.policies.map((p) => p.category), ...view.categoryEngine.map((c) => c.category)])].sort().map((c) => {
+              const label = view.policies.find((p) => p.category === c)?.label ?? view.categoryEngine.find((x) => x.category === c)?.label ?? c;
+              const own = view.categoryEngine.some((x) => x.category === c);
+              return (
+                <option key={c} value={c}>
+                  {label}（{c}）{own ? ' · 专用配置' : ''}
+                </option>
+              );
+            })}
+          </select>
+          {scope === ALL && view.categoryEngine.length > 0 && (
+            <span className="muted small">
+              {view.categoryEngine.map((c) => c.label).join('、')}有专用配置，改这里不影响它们。
+            </span>
+          )}
+          {scope !== ALL && !scoped.own && <span className="muted small">这个类目现在沿用商家默认。改完保存就成为它的专用配置。</span>}
+        </label>
         <div className="settings-grid">
           <fieldset>
             <legend>信号强度权重</legend>
             {STRENGTHS.map((k) => (
-              <NumberField key={k} label={STRENGTH_LABEL[k]} value={engine.strengthWeight[k]} onChange={(v) => setStrength(k, v)} hint={`默认 ${view.defaults.strengthWeight[k]}`} />
+              <NumberField key={k} label={STRENGTH_LABEL[k]} value={engine.strengthWeight[k]} onChange={(v) => setStrength(k, v)} hint={`${baseLabel} ${base.strengthWeight[k]}`} />
             ))}
           </fieldset>
           <fieldset>
             <legend>证据层级权重（0–1）</legend>
             {GROUPS.map((g) => (
-              <NumberField key={g} label={LAYER_WEIGHT_GROUPS[g].label} value={engine.layerWeight[g]} onChange={(v) => setLayer(g, v)} step="0.05" hint={`默认 ${view.defaults.layerWeight[g]}`} />
+              <NumberField key={g} label={LAYER_WEIGHT_GROUPS[g].label} value={engine.layerWeight[g]} onChange={(v) => setLayer(g, v)} step="0.05" hint={`${baseLabel} ${base.layerWeight[g]}`} />
             ))}
           </fieldset>
           <fieldset>
             <legend>阈值</legend>
-            <NumberField label="中风险：R ≥" value={engine.riskMedium} onChange={(v) => setEngine((e) => ({ ...e, riskMedium: v }))} hint={`默认 ${view.defaults.riskMedium}`} />
-            <NumberField label="高风险：R ≥" value={engine.riskHigh} onChange={(v) => setEngine((e) => ({ ...e, riskHigh: v }))} hint={`默认 ${view.defaults.riskHigh}`} />
+            <NumberField label="中风险：R ≥" value={engine.riskMedium} onChange={(v) => setEngine((e) => ({ ...e, riskMedium: v }))} hint={`${baseLabel} ${base.riskMedium}`} />
+            <NumberField label="高风险：R ≥" value={engine.riskHigh} onChange={(v) => setEngine((e) => ({ ...e, riskHigh: v }))} hint={`${baseLabel} ${base.riskHigh}`} />
             <NumberField
               label="数据置信度充足：Q ≥"
               value={engine.minDataConfidence}
               onChange={(v) => setEngine((e) => ({ ...e, minDataConfidence: v }))}
               step="0.05"
-              hint={`默认 ${view.defaults.minDataConfidence}（开发文档没有给数值）`}
+              hint={`${baseLabel} ${base.minDataConfidence}${scope === ALL ? '（开发文档没有给数值）' : ''}`}
             />
             <NumberField
               label="商家侧风险高：M ≥"
               value={engine.merchantRiskHigh}
               onChange={(v) => setEngine((e) => ({ ...e, merchantRiskHigh: v }))}
               step="0.05"
-              hint={`默认 ${view.defaults.merchantRiskHigh}（开发文档没有给数值）`}
+              hint={`${baseLabel} ${base.merchantRiskHigh}${scope === ALL ? '（开发文档没有给数值）' : ''}`}
             />
           </fieldset>
         </div>
         <div className="row" style={{ marginTop: 6 }}>
-          <button className="btn btn-primary" disabled={state.engine.busy} onClick={() => save('engine', { engine: fromDraft(engine) }, '已保存。')}>
-            {state.engine.busy ? '保存中…' : '保存权重与阈值'}
+          <button className="btn btn-primary" disabled={state.engine.busy} onClick={saveEngine}>
+            {state.engine.busy ? '保存中…' : scope === ALL ? '保存权重与阈值' : `保存“${scopeLabel}”专用配置`}
           </button>
-          <button
-            className="btn"
-            disabled={state.engine.busy || !view.customized}
-            onClick={() => {
-              if (window.confirm('恢复默认权重与阈值？未结案的索赔会重新判定。')) void save('engine', { engine: null }, '已恢复默认。');
-            }}
-          >
-            恢复默认
+          <button className="btn" disabled={state.engine.busy || !scoped.own} onClick={resetEngine}>
+            {scope === ALL ? '恢复默认' : '改回商家默认'}
           </button>
         </div>
         <Result state={state.engine} />

@@ -13,7 +13,7 @@ import { buildEvidenceDocuments } from './attachments';
 import { actorLabel } from './auth';
 import { db, newId, nowIso } from './db';
 import { upsertClaimFromDispute } from './paypal-sync';
-import { addTimeline, getClaim, getOrder, latestVerdict, merchantReturnAddress, type ClaimRow, type OrderRow } from './repo';
+import { addTimeline, getClaim, getOrder, latestVerdict, merchantReturnAddress, shadowModeOn, type ClaimRow, type OrderRow } from './repo';
 import { issuePortalToken } from './tokens';
 
 export interface ActionRequest {
@@ -244,6 +244,10 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
   const invalid = validate(req, order, claim);
   if (invalid) return { status: 400, body: { error: invalid } };
 
+  // 影子模式下不自动附件：报告会透露判定，自动挑选的证据图片来自反驳索赔的信号，同样会透露。
+  const shadow = shadowModeOn(claim.merchant_id);
+  if (shadow) req = { ...req, payload: { ...req.payload, attachEvidence: false, attachReport: false } };
+
   const wantsFiles = ATTACHMENT_TYPES.has(req.type) && (req.payload.attachEvidence || (EVIDENCE_TYPES.has(req.type) && req.payload.attachReport));
   const bundle = wantsFiles
     ? await buildEvidenceDocuments(claim.id, { evidence: !!req.payload.attachEvidence, report: EVIDENCE_TYPES.has(req.type) && !!req.payload.attachReport })
@@ -278,10 +282,10 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
   const confirmedAt = nowIso();
   conn
     .prepare(
-      `INSERT INTO actions (id, claim_id, verdict_id, type, payload, confirmed_by, confirmed_at, paypal_request_id, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      `INSERT INTO actions (id, claim_id, verdict_id, type, payload, confirmed_by, confirmed_at, paypal_request_id, status, shadow)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
     )
-    .run(actionId, claim.id, verdict.id, req.type, JSON.stringify(req.payload), req.actor.id, confirmedAt, req.idempotencyKey);
+    .run(actionId, claim.id, verdict.id, req.type, JSON.stringify(req.payload), req.actor.id, confirmedAt, req.idempotencyKey, shadow ? 1 : 0);
 
   try {
     const result = await callPayPal(req, claim, order, message, documents);

@@ -4,7 +4,8 @@ import { ready } from '@/server/bootstrap';
 import { authorize } from '@/server/guard';
 import { createClaim } from '@/server/ingest';
 import { startAnalysis } from '@/server/pipeline';
-import { addEvidence, addTimeline, getOrder, listClaims } from '@/server/repo';
+import { addEvidence, addTimeline, defaultMerchantId, getOrder, listClaims } from '@/server/repo';
+import { maskClaimList } from '@/server/shadow';
 import { MAX_UPLOAD_BYTES, sniffImageType } from '@/server/storage';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
   await ready();
   const auth = authorize(req);
   if (auth instanceof NextResponse) return auth;
-  return NextResponse.json({ claims: listClaims() });
+  return NextResponse.json(maskClaimList(defaultMerchantId(), listClaims()));
 }
 
 const TYPES: ClaimType[] = ['not_received', 'damaged', 'not_as_described', 'missing_items'];

@@ -1,4 +1,4 @@
-// 商家设置（开发文档 GET/PUT /api/settings）：判定权重与阈值、类目策略、退货地址、证据保留期。
+// 商家设置（开发文档 GET/PUT /api/settings）：判定权重与阈值（可按类目单独配置）、类目策略、影子模式、退货地址、证据保留期。
 // 权重和类目策略会改变判定结果，所以保存后把未结案的索赔重新判定一次；已结案的保留当时的判定作为审计记录。
 import { CATEGORY_LABEL, DEFAULT_CONFIG, isDefaultConfig, LAYER_WEIGHT_GROUPS, layerWeights, LEVEL_LABEL, STRENGTH_LABEL, type LayerGroup } from '@/core/catalog';
 import type { EngineConfig, ReturnAddress, Strength } from '@/core/types';
@@ -8,11 +8,13 @@ import { recompute } from './pipeline';
 import {
   addTimeline,
   DEMO_RETURN_ADDRESS,
+  engineConfigFor,
   getPolicy,
   latestVerdict,
   merchantEngineConfig,
   merchantSettings,
   saveMerchantSettings,
+  type StoredEngine,
   type StoredSettings,
 } from './repo';
 
@@ -37,6 +39,9 @@ export interface SettingsView {
   engine: EngineSettings;
   customized: boolean;
   defaults: EngineSettings;
+  /** 有专用权重与阈值的类目。没列出的类目用 engine。 */
+  categoryEngine: { category: string; label: string; engine: EngineSettings }[];
+  shadowMode: boolean;
   policies: (PolicySettings & { label: string; orders: number })[];
   /** 商家自己填的退货地址；没填时为 null，和解用演示地址。 */
   returnAddress: ReturnAddress | null;
@@ -47,6 +52,9 @@ export interface SettingsView {
 export interface SettingsInput {
   /** null 表示恢复默认。 */
   engine?: EngineSettings | null;
+  /** 某个类目的专用配置；engine 为 null 表示删掉，改回商家默认。 */
+  categoryEngine?: { category: string; engine: EngineSettings | null };
+  shadowMode?: boolean;
   policies?: PolicySettings[];
   returnAddress?: ReturnAddress | null;
   retentionDays?: number | null;
@@ -64,6 +72,8 @@ export type SettingsResult =
   | { ok: false; error: string };
 
 const STRENGTHS: Strength[] = ['strong', 'moderate', 'weak'];
+const CATEGORY_RE = /^[a-z0-9_-]{1,40}$/;
+const MAX_CATEGORY_ENGINES = 50;
 const GROUPS = Object.keys(LAYER_WEIGHT_GROUPS) as LayerGroup[];
 
 function toEngineSettings(cfg: EngineConfig): EngineSettings {
@@ -105,6 +115,10 @@ export function settingsView(merchantId: string): SettingsView {
     engine: toEngineSettings(cfg),
     customized: !isDefaultConfig(cfg),
     defaults: toEngineSettings(DEFAULT_CONFIG),
+    categoryEngine: Object.keys(stored.categoryEngine ?? {})
+      .sort()
+      .map((category) => ({ category, label: CATEGORY_LABEL[category] ?? category, engine: toEngineSettings(engineConfigFor(merchantId, category)) })),
+    shadowMode: stored.shadowMode === true,
     policies: listPolicies(merchantId),
     returnAddress: stored.returnAddress ?? null,
     demoReturnAddress: DEMO_RETURN_ADDRESS,
@@ -123,7 +137,7 @@ function num(value: unknown, label: string, min: number, max: number, opts: { ex
   return Math.round(n * 100) / 100;
 }
 
-function parseEngine(input: EngineSettings): NonNullable<StoredSettings['engine']> {
+function parseEngine(input: EngineSettings): StoredEngine {
   const strengthWeight = {} as Record<Strength, number>;
   for (const k of STRENGTHS) strengthWeight[k] = num(input.strengthWeight?.[k], `强度权重“${STRENGTH_LABEL[k]}”`, 0, 10);
   if (!(strengthWeight.strong >= strengthWeight.moderate && strengthWeight.moderate >= strengthWeight.weak)) {
@@ -172,7 +186,7 @@ function parseAddress(input: ReturnAddress): ReturnAddress {
 
 function parsePolicy(input: PolicySettings): PolicySettings {
   const category = typeof input.category === 'string' ? input.category.trim() : '';
-  if (!/^[a-z0-9_-]{1,40}$/.test(category)) throw new InvalidSettings(`类目“${category}”的名称无效`);
+  if (!CATEGORY_RE.test(category)) throw new InvalidSettings(`类目“${category}”的名称无效`);
   const flag = (v: unknown, label: string) => {
     if (typeof v !== 'boolean') throw new InvalidSettings(`类目“${category}”的“${label}”要选是或否`);
     return v;
@@ -203,8 +217,14 @@ function savePolicies(merchantId: string, policies: PolicySettings[]): void {
 }
 
 /** 判定输入变了的未结案索赔重新判定，判定等级变化的写进时间线。 */
-function recomputeOpenClaims(merchantId: string): { recomputed: number; changed: { claimId: string; from: string; to: string }[] } {
-  const rows = db().prepare("SELECT id FROM claims WHERE merchant_id = ? AND status != 'closed'").all(merchantId) as unknown as { id: string }[];
+function recomputeOpenClaims(merchantId: string, category: string | null): { recomputed: number; changed: { claimId: string; from: string; to: string }[] } {
+  const rows = (
+    category
+      ? db()
+          .prepare("SELECT c.id FROM claims c JOIN orders o ON o.id = c.order_id WHERE c.merchant_id = ? AND c.status != 'closed' AND o.category = ?")
+          .all(merchantId, category)
+      : db().prepare("SELECT id FROM claims WHERE merchant_id = ? AND status != 'closed'").all(merchantId)
+  ) as unknown as { id: string }[];
   const changed: { claimId: string; from: string; to: string }[] = [];
   for (const { id } of rows) {
     const before = latestVerdict(id);
@@ -221,6 +241,17 @@ function recomputeOpenClaims(merchantId: string): { recomputed: number; changed:
   return { recomputed: rows.length, changed };
 }
 
+/** 会影响判定的全部输入：商家默认配置、每个类目实际用的配置、类目策略。 */
+function judgmentSnapshot(merchantId: string): string {
+  const policies = listPolicies(merchantId);
+  const categories = [...new Set([...policies.map((p) => p.category), ...Object.keys(merchantSettings(merchantId).categoryEngine ?? {})])].sort();
+  return JSON.stringify({
+    base: merchantEngineConfig(merchantId),
+    categories: categories.map((c) => engineConfigFor(merchantId, c)),
+    policies,
+  });
+}
+
 export function updateSettings(merchantId: string, input: SettingsInput): SettingsResult {
   let next: StoredSettings;
   let policies: PolicySettings[] = [];
@@ -228,6 +259,24 @@ export function updateSettings(merchantId: string, input: SettingsInput): Settin
     next = { ...merchantSettings(merchantId) };
     if (input.engine === null) delete next.engine;
     else if (input.engine !== undefined) next.engine = parseEngine(input.engine);
+    if (input.categoryEngine !== undefined) {
+      const { category, engine } = input.categoryEngine ?? ({} as { category?: unknown; engine?: unknown });
+      if (typeof category !== 'string' || !CATEGORY_RE.test(category)) throw new InvalidSettings('类目名称无效');
+      const own = { ...next.categoryEngine };
+      if (engine === null) delete own[category];
+      else {
+        if (!engine || typeof engine !== 'object') throw new InvalidSettings('类目专用配置格式不对');
+        own[category] = parseEngine(engine as EngineSettings);
+      }
+      if (Object.keys(own).length > MAX_CATEGORY_ENGINES) throw new InvalidSettings(`最多给 ${MAX_CATEGORY_ENGINES} 个类目单独配置`);
+      if (Object.keys(own).length > 0) next.categoryEngine = own;
+      else delete next.categoryEngine;
+    }
+    if (input.shadowMode !== undefined) {
+      if (typeof input.shadowMode !== 'boolean') throw new InvalidSettings('影子模式要选开或关');
+      if (input.shadowMode) next.shadowMode = true;
+      else delete next.shadowMode;
+    }
     if (input.returnAddress === null) delete next.returnAddress;
     else if (input.returnAddress !== undefined) next.returnAddress = parseAddress(input.returnAddress);
     if (input.retentionDays === null) delete next.retentionDays;
@@ -245,15 +294,15 @@ export function updateSettings(merchantId: string, input: SettingsInput): Settin
     throw e;
   }
 
-  const beforeConfig = JSON.stringify(merchantEngineConfig(merchantId));
-  const beforePolicies = JSON.stringify(listPolicies(merchantId));
+  const before = judgmentSnapshot(merchantId);
   tx(() => {
     saveMerchantSettings(merchantId, next);
     savePolicies(merchantId, policies);
   });
-  const judgmentChanged =
-    JSON.stringify(merchantEngineConfig(merchantId)) !== beforeConfig || JSON.stringify(listPolicies(merchantId)) !== beforePolicies;
-  const { recomputed, changed } = judgmentChanged ? recomputeOpenClaims(merchantId) : { recomputed: 0, changed: [] };
+  const judgmentChanged = judgmentSnapshot(merchantId) !== before;
+  // 只改了某个类目的专用配置时，只有这个类目的索赔受影响。
+  const onlyCategory = input.categoryEngine && input.engine === undefined && input.policies === undefined ? input.categoryEngine.category : null;
+  const { recomputed, changed } = judgmentChanged ? recomputeOpenClaims(merchantId, onlyCategory) : { recomputed: 0, changed: [] };
   const purged = input.retentionDays ? purgeExpiredEvidence(merchantId) : null;
   return { ok: true, view: settingsView(merchantId), recomputed, changed, purged };
 }

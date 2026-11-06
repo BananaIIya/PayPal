@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ready } from '@/server/bootstrap';
 import { authorize } from '@/server/guard';
+import { getClaim, shadowModeOn } from '@/server/repo';
 import { renderReportPdf, ReportFontUnavailableError, type ReportAudience } from '@/server/report-pdf';
 
 export const dynamic = 'force-dynamic';
@@ -11,6 +12,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const auth = authorize(req);
   if (auth instanceof NextResponse) return auth;
   const { id } = await params;
+  const claim = getClaim(id);
+  if (claim && shadowModeOn(claim.merchant_id)) {
+    return NextResponse.json({ error: '现在是影子模式，判定不给处理人员看，所以不出报告' }, { status: 403 });
+  }
   const audience: ReportAudience = req.nextUrl.searchParams.get('audience') === 'paypal' ? 'paypal' : 'merchant';
   try {
     const report = await renderReportPdf(id, audience);

@@ -287,3 +287,89 @@ function offerAction(ctx: Ctx): SuggestedAction {
     notes: `您好，我们核对了发货记录。为尽快解决此事，我们愿意退还 ${claim.currency} ${amount.toFixed(2)} 作为和解，您看是否可以接受？`,
   };
 }
+
+// 用索引取，免得被“PayPal 写接口只在执行器里调用”的结构性检查误判（这里只生成说明文字）。
+const op = (type: ActionType, hasDispute: boolean) => OPERATION[type](hasDispute);
+
+/**
+ * 影子模式下的动作选项：只按 PayPal 当前允许的操作列出，顺序固定，不带理由，草稿只写中性的格式内容，
+ * 不引用任何核验发现。处理人员的决定因此不受判定影响，事后才能拿来和判定对照。
+ */
+export function neutralActions(ctx: {
+  allowed: readonly ActionType[];
+  hasDispute: boolean;
+  closed: boolean;
+  amount: number;
+  currency: string;
+  trackingNumber?: string | null;
+  carrier?: string | null;
+  canOfferReturn: boolean;
+}): SuggestedAction[] {
+  const { allowed, hasDispute, amount, currency } = ctx;
+  const can = (t: ActionType) => allowed.includes(t);
+  const out: SuggestedAction[] = [];
+  const reason = '影子模式：判定不显示，请根据证据和订单信息自行决定。';
+  if (!ctx.closed) {
+    if (can('send_message')) {
+      out.push({
+        type: 'send_message',
+        label: '发消息给买家',
+        reason,
+        paypalOperation: op('send_message', hasDispute),
+        message: `您好，我们正在处理您的售后申请。如需补充照片，请通过此链接拍摄或上传：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
+      });
+    }
+    if (can('provide_evidence')) {
+      out.push({ type: 'provide_evidence', label: '提交证据', reason, paypalOperation: op('provide_evidence', true), evidenceType: 'OTHER', notes: '' });
+      if (ctx.trackingNumber) {
+        out.push({
+          type: 'provide_evidence',
+          label: '提交物流证据',
+          reason,
+          paypalOperation: op('provide_evidence', true),
+          evidenceType: 'PROOF_OF_FULFILLMENT',
+          notes: `承运商：${ctx.carrier ?? '未知'}，单号：${ctx.trackingNumber}。`,
+          trackingNumber: ctx.trackingNumber,
+          carrier: ctx.carrier ?? undefined,
+        });
+      }
+    }
+    if (can('make_offer')) {
+      out.push({ type: 'make_offer', label: '提出部分退款', reason: `${reason}金额自己填写。`, paypalOperation: op('make_offer', hasDispute), notes: '' });
+      if (ctx.canOfferReturn) {
+        out.push({ ...returnOfferDraft({ amount, currency }), reason: `${reason}买家先寄回，验货后再退款。` });
+      }
+    }
+    if (can('accept_claim')) {
+      out.push({ type: 'accept_claim', label: '接受索赔并退款', reason, paypalOperation: op('accept_claim', true), refundAmount: amount, notes: '接受买家索赔。' });
+    }
+    if (can('refund')) {
+      out.push({
+        type: 'refund',
+        label: '全额退款',
+        reason,
+        paypalOperation: op('refund', false),
+        refundAmount: amount,
+        message: `您好，您的售后申请已处理，货款 ${currency} ${amount.toFixed(2)} 已退回原支付账户。`,
+      });
+    }
+    if (can('escalate')) out.push({ type: 'escalate', label: '升级到 PayPal 审理', reason, paypalOperation: op('escalate', true), notes: '' });
+  }
+  if (can('provide_supporting_info')) {
+    out.push({ type: 'provide_supporting_info', label: '向 PayPal 补充说明', reason, paypalOperation: op('provide_supporting_info', true), notes: '补充说明：' });
+  }
+  if (can('acknowledge_return_item')) {
+    out.push({
+      type: 'acknowledge_return_item',
+      label: '确认退货收货情况',
+      reason: `${reason}请按实际验收结果选择，选“已收到，状态正常”后 PayPal 会直接退款结案。`,
+      paypalOperation: op('acknowledge_return_item', true),
+      acknowledgementType: 'ITEM_RECEIVED',
+      notes: '商家已收到买家退回的包裹。',
+    });
+  }
+  if (can('appeal')) {
+    out.push({ type: 'appeal', label: '申诉', reason, paypalOperation: op('appeal', true), evidenceType: 'OTHER', notes: '商家申诉，依据如下：' });
+  }
+  return out;
+}
