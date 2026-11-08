@@ -1,6 +1,6 @@
 // 编排器：按索赔类型派发分析器，并行运行；任一分析器完成后重新计算判定。
 // MVP 用进程内执行代替 BullMQ + Worker，接口边界保持不变，之后可以把 runAnalysis 挪进 Worker。
-import { ANALYZER_IMPL, type AnalyzerContext, type OtherEvidence } from '@/analyzers';
+import { ANALYZER_IMPL, assessChallenges, type AnalyzerContext, type OtherEvidence } from '@/analyzers';
 import { videoMeta } from '@/analyzers/video-meta';
 import { applicableAnalyzers } from '@/core/catalog';
 import { decide } from '@/core/engine';
@@ -19,7 +19,9 @@ import {
   getPolicy,
   getTracking,
   latestVerdict,
+  merchantAgreedRefund,
   orderReferences,
+  promoteVerifiedCaptures,
   toOrderView,
   type ClaimRow,
   type OrderRow,
@@ -154,10 +156,7 @@ function merchantFactors(claim: ClaimRow, order: OrderRow): MerchantRiskFactors 
 }
 
 function alreadyAgreed(order: OrderRow): boolean {
-  const rows = db()
-    .prepare("SELECT text FROM messages WHERE order_id = ? AND sender = 'merchant'")
-    .all(order.id) as unknown as { text: string }[];
-  return rows.some((m) => /同意.{0,6}退款|已为您退款|已退款/.test(m.text));
+  return merchantAgreedRefund(order.id);
 }
 
 /**
@@ -326,7 +325,18 @@ export async function runAnalysis(claimId: string, opts: RunOptions = {}): Promi
       if (claim.status !== 'closed') conn.prepare("UPDATE claims SET status = 'analyzing' WHERE id = ?").run(claimId);
     });
 
-    const ctx = buildContext(claim, order, !!opts.offline);
+    let ctx = buildContext(claim, order, !!opts.offline);
+    // 先核对挑战码。通过的拍摄在分析器扇出之前提升层级，这样依据来源和镜头覆盖用的是同一份上下文。
+    // 核对失败不提升；consistency 会把这次失败记成未完成。
+    try {
+      const preview = await assessChallenges(ctx);
+      if (preview.matchedIds.length) {
+        promoteVerifiedCaptures(preview.matchedIds);
+        ctx = buildContext(claim, order, !!opts.offline);
+      }
+    } catch {
+      /* 保持待核验 */
+    }
 
     await Promise.all(
       targets.map(async (analyzer, index) => {

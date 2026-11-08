@@ -8,7 +8,7 @@ import type {
   Strength,
 } from './types';
 
-export const RULES_VERSION = 'mvp-2026-11-04';
+export const RULES_VERSION = 'mvp-2026-11-07';
 
 export const SOURCE_LAYER: Record<SourceMark, Layer> = {
   paypal_record: 'A',
@@ -16,6 +16,7 @@ export const SOURCE_LAYER: Record<SourceMark, Layer> = {
   listing_snapshot: 'A',
   reference: 'A',
   live_capture: 'B',
+  challenge_pending: 'C',
   paypal_dispute: 'C',
   uploaded: 'C',
   manual_import: 'C',
@@ -27,7 +28,8 @@ export const SOURCE_LABEL: Record<SourceMark, string> = {
   carrier_api: '物流接口',
   listing_snapshot: '下单时商品快照',
   reference: '商家留底',
-  live_capture: '现场拍摄',
+  live_capture: '挑战码已核对',
+  challenge_pending: '挑战拍摄，待核验',
   paypal_dispute: 'PayPal 争议附件',
   uploaded: '相册上传',
   manual_import: '商家手动导入',
@@ -42,6 +44,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
     listing_snapshot: 1,
     reference: 1,
     live_capture: 1,
+    challenge_pending: 0.6,
     paypal_dispute: 0.8,
     uploaded: 0.6,
     manual_import: 0.6,
@@ -60,7 +63,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
 export const LAYER_WEIGHT_GROUPS = {
   ab: { label: 'A、B 层（系统记录、现场拍摄）', sources: ['paypal_record', 'carrier_api', 'listing_snapshot', 'reference', 'live_capture'] },
   cPaypal: { label: 'C 层：PayPal 争议附件', sources: ['paypal_dispute'] },
-  cUploaded: { label: 'C 层：相册上传、商家导入', sources: ['uploaded', 'manual_import'] },
+  cUploaded: { label: 'C 层：相册上传、商家导入、待核验的挑战拍摄', sources: ['uploaded', 'manual_import', 'challenge_pending'] },
   d: { label: 'D 层：文字陈述', sources: ['narrative'] },
 } as const satisfies Record<string, { label: string; sources: SourceMark[] }>;
 export type LayerGroup = keyof typeof LAYER_WEIGHT_GROUPS;
@@ -117,15 +120,21 @@ export const CATEGORY_LABEL: Record<string, string> = {
   general: '其他',
 };
 
-/** 判定直接为高风险、不被其他信号抵消的强反驳信号（开发文档“计算步骤·硬规则”）。 */
+/**
+ * 判定直接为高风险、不被其他信号抵消的强反驳信号。
+ * 只收有索赔之外的记录可以核对的情况：历史证据、网上更早的图片、交易记录、消息库。
+ * 未核验的来源声明还没核实签名。序列号不符也可能是仓库错发，不在这里；
+ * 现场或系统记录里读到的明显不符，由引擎在数据置信度足够时单独升到高风险，动作仍是先排查错发。
+ * 买家自己的多份证据互相矛盾没有外部反证，不能当成已确认滥用。
+ * 例外是 AI_PROVENANCE_FOUND：文件自己声明整份内容由 AI 从零生成。签名同样没核验，
+ * 但这种声明只会对提交者不利，不存在为了索赔而伪造它的动机。AI 修图仍然只是中风险下限。
+ */
 export const HARD_RULE_CODES = new Set([
-  'AI_PROVENANCE_FOUND',
-  'IDENTITY_MISMATCH',
   'IMAGE_FOUND_ONLINE',
   'EVIDENCE_REUSED_ACROSS_CLAIMS',
   'RECORD_NOT_FOUND',
   'SCREENSHOT_CONTENT_MISMATCH',
-  'CROSS_EVIDENCE_CONTRADICTION',
+  'AI_PROVENANCE_FOUND',
 ]);
 
 /**
@@ -141,6 +150,10 @@ export const MEDIUM_FLOOR_CODES = new Set([
   // 文档判定表把这两种情况明确列为中风险，不应该被一个弱支持信号抵消到低风险。
   'DELIVERED_CONFIRMED',
   'WEIGHT_MISMATCH',
+  // 照片之间对不上要核对，但没有外部反证，不能靠硬规则判成已确认滥用。
+  'CROSS_EVIDENCE_CONTRADICTION',
+  // 未核验的 AI 来源声明不能单独判高风险，但也不能维持低风险并建议退款。
+  'PROVENANCE_CLAIM_UNVERIFIED',
 ]);
 
 export const CLAIM_TYPE_LABEL: Record<ClaimType, string> = {
@@ -207,7 +220,10 @@ export function applicableAnalyzers(
   return out;
 }
 
-/** 这组分析器全部不可用时，判定不能是低风险（开发文档“未执行检查”）。 */
+/**
+ * 关键分析器。组里有一个不可用或失败，判定就不能是低风险。
+ * 不能要求整组都不可用：来源解析在本地总会跑完，检测器没接入时仍会剩低风险并建议退款。
+ */
 export function keyAnalyzerGroups(type: ClaimType): AnalyzerName[][] {
   if (type === 'not_received') return [['logistics']];
   if (type === 'missing_items' || type === 'return') return [['provenance', 'synthetic'], ['logistics']];
@@ -240,14 +256,14 @@ export const PROPOSITIONS: Record<ClaimType, PropositionDef[]> = {
       label: '包裹是否已交付',
       key: true,
       holdsBy: ['DELIVERED_CONFIRMED', 'DELIVERY_ADDRESS_MISMATCH'],
-      refutedBy: ['SHIPPED_BEFORE_ORDER', 'TRACKING_NOT_DELIVERED'],
+      refutedBy: ['SHIPPED_BEFORE_ORDER'],
     },
     {
       id: 'address_match',
       label: '签收地址是否为订单地址',
       key: true,
       holdsBy: ['DELIVERED_CONFIRMED'],
-      refutedBy: ['DELIVERY_ADDRESS_MISMATCH', 'TRACKING_NOT_DELIVERED'],
+      refutedBy: ['DELIVERY_ADDRESS_MISMATCH'],
     },
     { id: 'buyer_obtained', label: '买家是否实际取得（排除代收、投递错误、被盗）', key: false },
     {
@@ -263,7 +279,7 @@ export const PROPOSITIONS: Record<ClaimType, PropositionDef[]> = {
       label: '损坏是否存在',
       key: true,
       requiredShots: ['damage_closeup'],
-      refutedBy: ['PHYSICALLY_IMPLAUSIBLE', 'SCREEN_RECAPTURE', 'AI_PROVENANCE_FOUND', 'SYNTHETIC_LIKELY'],
+      refutedBy: ['PHYSICALLY_IMPLAUSIBLE', 'SCREEN_RECAPTURE', 'SYNTHETIC_LIKELY', 'AI_PROVENANCE_FOUND'],
     },
     {
       id: 'is_order_item',
@@ -315,7 +331,7 @@ export const PROPOSITIONS: Record<ClaimType, PropositionDef[]> = {
       label: '退回包裹是否寄出并送达',
       key: true,
       holdsBy: ['DELIVERED_CONFIRMED'],
-      refutedBy: ['DELIVERY_ADDRESS_MISMATCH', 'TRACKING_NOT_DELIVERED'],
+      refutedBy: ['DELIVERY_ADDRESS_MISMATCH'],
     },
     {
       id: 'returned_is_original',
@@ -328,7 +344,8 @@ export const PROPOSITIONS: Record<ClaimType, PropositionDef[]> = {
 };
 
 export const SIGNAL_TITLE: Record<string, string> = {
-  AI_PROVENANCE_FOUND: '文件带有 AI 生成标识',
+  AI_PROVENANCE_FOUND: '文件声明由 AI 从零生成',
+  PROVENANCE_CLAIM_UNVERIFIED: '来源声明未验证，需要原图或补充证据',
   NO_PROVENANCE: '未发现来源凭证',
   C2PA_MANIFEST_UNVERIFIED: '存在内容凭证，未判定为 AI 生成',
   SYNTHETIC_LIKELY: 'AI 生成检测概率偏高',
@@ -337,6 +354,8 @@ export const SIGNAL_TITLE: Record<string, string> = {
   NARRATIVE_EVIDENCE_CONFLICT: '文字陈述与证据不一致',
   CHALLENGE_MISSING: '画面中没有识别到挑战码',
   CHALLENGE_MISMATCH: '画面中的挑战码与下发的不符',
+  CHALLENGE_MATCHED: '画面中的挑战码与下发的一致',
+  CHALLENGE_UNVERIFIED: '挑战码未能核验',
   PHYSICALLY_IMPLAUSIBLE: '损坏形态不符合材料常识',
   SCREEN_RECAPTURE: '疑似对着屏幕翻拍',
   DAMAGE_CAUSE_MISMATCH: '损坏与声称原因不吻合',
@@ -345,12 +364,15 @@ export const SIGNAL_TITLE: Record<string, string> = {
   IDENTITY_MATCH: '商品身份特征与留底一致',
   SNAPSHOT_DIFFERENCE: '实物与下单时快照有差异',
   SNAPSHOT_MATCH: '实物与下单时快照一致',
+  SNAPSHOT_UNVERIFIED: '实物与下单快照无法核对',
   IMAGE_FOUND_ONLINE: '网上存在更早的相同图片',
   EVIDENCE_REUSED_ACROSS_CLAIMS: '同一张图出现在其他索赔中',
   DELIVERED_CONFIRMED: '物流显示已签收到订单地址',
+  DELIVERY_ADDRESS_UNVERIFIED: '已签收，但无法核对是否为订单地址',
   DELIVERY_ADDRESS_MISMATCH: '签收地址与订单地址不一致',
   SHIPPED_BEFORE_ORDER: '物流事件早于下单时间',
   TRACKING_NOT_DELIVERED: '物流尚未显示签收',
+  TRACKING_STATUS_UNKNOWN: '物流状态不明',
   WEIGHT_MISMATCH: '称重与买家声称的内容不符',
   WEIGHT_SHORTFALL: '称重低于商品理论重量',
   RECORD_NOT_FOUND: '单据中的订单在交易记录里查不到',
@@ -366,8 +388,13 @@ export const SIGNAL_TITLE: Record<string, string> = {
 /** 每个强信号附上的常见正常解释（开发文档“处置约束”）。 */
 export const NORMAL_EXPLANATIONS: Record<string, string[]> = {
   AI_PROVENANCE_FOUND: [
+    '买家可能误传了用 AI 生成的示意图，而不是实拍照片；可以给一次补交实拍原图的机会',
+    '清单签名尚未核验，但 AI 修图会记为编辑而不是从零生成，不会触发这一条',
+  ],
+  PROVENANCE_CLAIM_UNVERIFIED: [
     '买家可能只是用 AI 工具圈出了瑕疵位置，此时请买家提供未经编辑的原图',
     '手机相册的 AI 修图、去背景等功能也会写入这类标识',
+    '清单可能被重新编码去掉，没有这份声明也不等于照片真实',
   ],
   IDENTITY_MISMATCH: ['仓库可能错发了同款的另一件商品', '留底或拍摄时可能存在扫描、识别错误'],
   EVIDENCE_REUSED_ACROSS_CLAIMS: ['同一买家可能在补充同一笔售后的材料', '图片也可能是商家自有素材'],

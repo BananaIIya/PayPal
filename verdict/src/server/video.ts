@@ -154,7 +154,7 @@ export async function extractFrames(buf: Buffer, mime: VideoMime): Promise<Frame
 export async function addVideoEvidence(input: {
   claimId: string | null;
   orderId: string;
-  source: Extract<SourceMark, 'live_capture' | 'uploaded' | 'manual_import' | 'paypal_dispute'>;
+  source: Extract<SourceMark, 'live_capture' | 'challenge_pending' | 'uploaded' | 'manual_import' | 'paypal_dispute'>;
   file: Buffer;
   mime: VideoMime;
   shot: string | null;

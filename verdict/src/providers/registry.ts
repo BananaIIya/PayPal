@@ -36,12 +36,17 @@ export interface ProviderOptions {
   offline?: boolean;
 }
 
-export async function extractAttributes(
+type VisionHit = { provider: string; attrs: EvidenceAttributes };
+
+/** 同一张图同时被多个分析器抽取时，共用这一次模型调用。 */
+const inflight = new Map<string, Promise<VisionHit>>();
+
+async function extractFresh(
   evidence: { sha256: string; mime_type: string },
   read: () => Buffer,
   ctx: VisionContext,
-  opts: ProviderOptions = {},
-): Promise<{ provider: string; attrs: EvidenceAttributes }> {
+  opts: ProviderOptions,
+): Promise<VisionHit> {
   const hit = cacheGet<EvidenceAttributes>('vision', evidence.sha256);
   if (hit) return { provider: hit.provider, attrs: hit.result };
   const vision = opts.offline ? null : claudeVisionFromEnv();
@@ -49,6 +54,24 @@ export async function extractAttributes(
   const attrs = await vision.extract(read(), evidence.mime_type, ctx);
   cachePut('vision', evidence.sha256, vision.name, attrs);
   return { provider: vision.name, attrs };
+}
+
+export async function extractAttributes(
+  evidence: { sha256: string; mime_type: string },
+  read: () => Buffer,
+  ctx: VisionContext,
+  opts: ProviderOptions = {},
+): Promise<VisionHit> {
+  const hit = cacheGet<EvidenceAttributes>('vision', evidence.sha256);
+  if (hit) return { provider: hit.provider, attrs: hit.result };
+  const key = evidence.sha256;
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const job = extractFresh(evidence, read, ctx, opts).finally(() => {
+    if (inflight.get(key) === job) inflight.delete(key);
+  });
+  inflight.set(key, job);
+  return job;
 }
 
 export function syntheticScores(sha256: string): { provider: string; entry: SyntheticCacheEntry } | null {

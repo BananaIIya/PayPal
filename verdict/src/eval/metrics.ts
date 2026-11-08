@@ -229,7 +229,7 @@ export interface Summary {
   confusion: ReturnType<typeof confusion>;
   incomplete: number;
   calibration: CalibrationBin[];
-  /** 判为高风险、但 R 低于高风险阈值的样本（硬规则命中）。PR-AUC 只按 R 排序，会低估这些样本。 */
+  /** 判为高风险、但 R 低于高风险阈值的样本。PR-AUC 只按 R 排序，会低估这些样本。 */
   hardRuleHigh: string[];
   analyzers: AnalyzerStats[];
   latency: ReturnType<typeof latency>;

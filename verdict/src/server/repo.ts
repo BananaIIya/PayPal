@@ -185,6 +185,27 @@ export function getTracking(order: OrderRow): TrackingResult | null {
   return json<TrackingResult | null>(order.tracking_sim, null);
 }
 
+const NEGATION_BEFORE = /(?:无法|不能|不要|不会|不予|没有|暂不|拒绝|不同意|不|未|别|拒|没|非)$/;
+
+/** 商家这句话是不是在答应退款。否定句（不同意、无法退款、尚未退款）不算。 */
+export function textAgreesToRefund(text: string): boolean {
+  const agree = /同意[^，,。！!？?\n]{0,6}退款|已为您退款|(?<![未不])已退款/g;
+  for (const match of text.matchAll(agree)) {
+    const start = match.index ?? 0;
+    const before = text.slice(Math.max(0, start - 8), start);
+    if (NEGATION_BEFORE.test(before)) continue;
+    if (match[0] === '已退款' && /已退款.{0,8}(?:不|未|没|别|拒|无法|不能)/.test(text.slice(start, start + match[0].length + 8))) continue;
+    return true;
+  }
+  return false;
+}
+
+/** 商家自己在消息里说过要退款。买家截图和买家消息不算。 */
+export function merchantAgreedRefund(orderId: string): boolean {
+  const rows = db().prepare("SELECT text FROM messages WHERE order_id = ? AND sender = 'merchant'").all(orderId) as { text: string }[];
+  return rows.some((m) => textAgreesToRefund(m.text));
+}
+
 export function addTimeline(claimId: string, kind: string, title: string, detail?: string, at?: string): void {
   db()
     .prepare('INSERT INTO timeline_events (id, claim_id, at, kind, title, detail) VALUES (?, ?, ?, ?, ?, ?)')
@@ -238,6 +259,15 @@ export async function addEvidence(input: {
       input.at ?? nowIso(),
     );
   return { id, sha256: hash, layer };
+}
+
+/** 挑战码核对通过后，把待核验的拍摄和它的视频帧提升为 B 层。已经是其他来源的行不动。 */
+export function promoteVerifiedCaptures(ids: string[]): void {
+  if (!ids.length) return;
+  const marks = ids.map(() => '?').join(', ');
+  const conn = db();
+  conn.prepare(`UPDATE evidence SET source = 'live_capture', layer = 'B' WHERE source = 'challenge_pending' AND id IN (${marks})`).run(...ids);
+  conn.prepare(`UPDATE evidence SET source = 'live_capture', layer = 'B' WHERE source = 'challenge_pending' AND parent_id IN (${marks})`).run(...ids);
 }
 
 export function claimEvidence(claimId: string): EvidenceRow[] {

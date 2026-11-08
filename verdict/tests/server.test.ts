@@ -50,7 +50,92 @@ afterAll(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+describe('商家是否同意退款', () => {
+  it('答应退款才算，否定句和买家口吻不算', () => {
+    for (const text of ['我们同意退款', '已为您退款', '货款已退款', '同意马上给您退款', '不客气，我们同意退款']) {
+      expect(repo.textAgreesToRefund(text), text).toBe(true);
+    }
+    for (const text of ['不同意退款', '无法同意退款', '不能退款', '拒绝退款', '暂不退款', '尚未退款', '没有同意退款', '已退款是不可能的', '请不要同意退款']) {
+      expect(repo.textAgreesToRefund(text), text).toBe(false);
+    }
+  });
+});
+
 describe('动作执行器', () => {
+  it('证据不足时退款、接受索赔和和解都不执行，也不落库', async () => {
+    const d = claimByScenario('insufficient');
+    expect(d.verdict!.report.level).toBe('insufficient');
+    for (const type of ['refund', 'accept_claim', 'make_offer'] as const) {
+      const res = await actions.executeAction(req(d, { type, payload: { amount: 1, notes: '说明', message: '您好' } }));
+      expect(res.status).toBe(409);
+      expect(String(res.body.error)).toContain('证据不足');
+    }
+    expect(repo.claimActions(d.claim.id)).toHaveLength(0);
+    expect(repo.getClaim(d.claim.id)!.status).not.toBe('closed');
+
+    const { claimView } = await import('@/server/views');
+    const view = await claimView(d.claim.id);
+    const types = view!.actionOptions.map((a) => a.type);
+    expect(types).not.toContain('refund');
+    expect(types).not.toContain('accept_claim');
+    expect(types).not.toContain('make_offer');
+  });
+
+  it('中风险即使建议写成全额退款也不放行；和解和已同意的退款仍然可以', () => {
+    expect(
+      actions.payoutBlockedByVerdict({ level: 'medium', suggestedAction: 'refund', alreadyAgreed: false }, { type: 'refund' }),
+    ).toMatch(/中风险或高风险/);
+    expect(actions.payoutBlockedByVerdict({ level: 'medium', suggestedAction: 'make_offer' }, { type: 'make_offer' })).toBeNull();
+    expect(
+      actions.payoutBlockedByVerdict({ level: 'high', suggestedAction: 'none', identityRefund: true }, { type: 'accept_claim' }),
+    ).toBeNull();
+    expect(
+      actions.payoutBlockedByVerdict({ level: 'insufficient', suggestedAction: 'accept_claim', alreadyAgreed: true }, { type: 'accept_claim' }),
+    ).toBeNull();
+    expect(actions.payoutBlockedByVerdict({ level: 'low', suggestedAction: 'accept_claim' }, { type: 'accept_claim' })).toBeNull();
+  });
+
+  it('中风险和高风险不能改走全额退款；建议本身是和解时仍可和解', async () => {
+    const medium = claimByScenario('narrative_conflict');
+    expect(medium.verdict!.report.level).toBe('medium');
+    const refund = await actions.executeAction(req(medium, { type: 'refund', payload: { amount: 1, notes: '说明' } }));
+    expect(refund.status).toBe(409);
+    expect(String(refund.body.error)).toContain('中风险或高风险');
+    expect(repo.claimActions(medium.claim.id)).toHaveLength(0);
+
+    const high = claimByScenario('fake_chat');
+    expect(high.verdict!.report.level).toBe('high');
+    const again = await actions.executeAction(req(high, { type: 'refund', payload: { amount: 1, message: '您好' } }));
+    expect(again.status).toBe(409);
+    expect(repo.claimActions(high.claim.id)).toHaveLength(0);
+
+    const offer = claimByScenario('partial_missing');
+    expect(offer.verdict!.report.primaryAction.type).toBe('make_offer');
+    const full = await actions.executeAction(req(offer, { type: 'refund', payload: { amount: 1 } }));
+    expect(full.status).toBe(409);
+    expect(repo.claimActions(offer.claim.id)).toHaveLength(0);
+
+    const delivered = claimByScenario('delivered_not_received');
+    expect(delivered.verdict!.report.primaryAction.type).not.toBe('make_offer');
+    const returned = await actions.executeAction(req(delivered, { type: 'make_offer', payload: { amount: 10, notes: '请先寄回', withReturn: true } }));
+    expect(returned.status).toBe(409);
+    expect(String(returned.body.error)).toContain('不会执行');
+    expect(repo.claimActions(delivered.claim.id)).toHaveLength(0);
+
+    const { claimView } = await import('@/server/views');
+    for (const id of [medium.claim.id, high.claim.id, offer.claim.id]) {
+      const view = await claimView(id);
+      expect(view!.actionOptions.map((a) => a.type)).not.toContain('refund');
+    }
+  });
+
+  it('序列号不符时仍可接受索赔，用来处理可能的错发', async () => {
+    const d = claimByScenario('identity_mismatch');
+    expect(d.verdict!.report.primaryAction.type).toBe('none');
+    const res = await actions.executeAction(req(d, { type: 'accept_claim', payload: { notes: '先按错发退款' } }));
+    expect(res.status).toBe(200);
+  });
+
   it('没有 confirm 不执行，也不落库', async () => {
     const d = claimByScenario('insufficient');
     const res = await actions.executeAction(req(d, { confirm: false }));
@@ -86,11 +171,25 @@ describe('动作执行器', () => {
     expect(sent.return_shipping_address).toEqual(repo.DEMO_RETURN_ADDRESS);
     expect(repo.claimTimeline(d.claim.id).some((t) => t.title === '商家提出退货退款')).toBe(true);
 
-    // 没有争议的订单，和解走部分退款，没有退货这一步。
+    // 没有争议、建议也不是和解时，退货和解不会执行。
     const portal = claimByScenario('genuine_damage');
     expect(portal.claim.disputeId).toBeFalsy();
     const bad = await actions.executeAction(req(portal, { type: 'make_offer', payload: { amount: 1, notes: 'x', withReturn: true } }));
-    expect(bad.status).toBe(400);
+    expect(bad.status).toBe(409);
+    expect(String(bad.body.error)).toContain('不会执行');
+    expect(repo.claimActions(portal.claim.id)).toHaveLength(0);
+
+    // 建议已经是和解、但订单没有争议时，仍然不能要求退货。
+    const verdict = repo.latestVerdict(portal.claim.id)!;
+    const report = JSON.parse(verdict.report) as { primaryAction: { type: string } };
+    const previous = report.primaryAction.type;
+    report.primaryAction = { ...report.primaryAction, type: 'make_offer' };
+    db.db().prepare(`UPDATE verdicts SET suggested_action = 'make_offer', report = ? WHERE id = ?`).run(JSON.stringify(report), verdict.id);
+    const noDispute = await actions.executeAction(req(portal, { type: 'make_offer', payload: { amount: 1, notes: 'x', withReturn: true } }));
+    report.primaryAction = { ...report.primaryAction, type: previous };
+    db.db().prepare(`UPDATE verdicts SET suggested_action = ?, report = ? WHERE id = ?`).run(previous, JSON.stringify(report), verdict.id);
+    expect(noDispute.status).toBe(400);
+    expect(String(noDispute.body.error)).toContain('只有 PayPal 争议');
     expect(repo.claimActions(portal.claim.id)).toHaveLength(0);
   });
 
@@ -222,6 +321,34 @@ describe('来源扫描', () => {
     expect(tagged.c2paManifest).toBe(true);
     expect(tagged.aiSourceType).toBe(true);
     expect(tagged.generator).toBe('ChatGPT');
+    expect(tagged.fullyGenerated).toBe(true);
+  });
+
+  it('区分从零生成和 AI 修图，并识别 Grok 写入的清单', async () => {
+    const { scanProvenance } = await import('@/analyzers/provenance-scan');
+    const { renderScene, injectSimulatedC2PA } = await import('@/demo/images');
+    const plain = await renderScene({ kind: 'mug', seed: 2 });
+
+    const grok = scanProvenance(injectSimulatedC2PA(plain, { generator: 'Grok Imagine' }), 'image/jpeg');
+    expect(grok).toMatchObject({ aiSourceType: true, fullyGenerated: true, generator: 'Grok Imagine' });
+
+    // 打开一张照片再用 AI 修改：仍是 AI 来源声明，但不算从零生成。
+    const edited = scanProvenance(injectSimulatedC2PA(plain, { edited: true }), 'image/jpeg');
+    expect(edited).toMatchObject({ c2paManifest: true, aiSourceType: true, fullyGenerated: false });
+
+    // 只有来源类型、没有 c2pa.created 动作的清单，拿不准就不算从零生成。
+    const chunk = (type: string, data: Buffer) => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(data.length);
+      return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]);
+    };
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const noAction = Buffer.concat([
+      sig,
+      chunk('caBX', Buffer.from('jumb c2pa http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia')),
+      chunk('IEND', Buffer.alloc(0)),
+    ]);
+    expect(scanProvenance(noAction, 'image/png')).toMatchObject({ aiSourceType: true, fullyGenerated: false });
   });
 
   it('识别 PNG 的 caBX 块和 AIGC 隐式标识', async () => {

@@ -19,7 +19,7 @@ import { assignSplits, groupComponents, SPLITS, type Split } from './splits';
 const MERCHANT_ID = 'eval-merchant';
 const CLAIM_TYPES: ClaimType[] = ['not_received', 'damaged', 'not_as_described', 'missing_items', 'return'];
 const ORIGINS: ClaimOrigin[] = ['paypal_dispute', 'portal', 'manual_import'];
-const EVIDENCE_SOURCES = ['uploaded', 'live_capture', 'manual_import', 'paypal_dispute'] as const;
+const EVIDENCE_SOURCES = ['uploaded', 'live_capture', 'challenge_pending', 'manual_import', 'paypal_dispute'] as const;
 type EvidenceSource = (typeof EVIDENCE_SOURCES)[number];
 
 interface FileRef {

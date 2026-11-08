@@ -75,6 +75,7 @@ class FakePayPal {
   disputes = new Map<string, Record<string, unknown>>();
   tokens = 0;
   verification = 'SUCCESS';
+  refundStatus = 'COMPLETED';
   private failures: { match: RegExp; method: string; times: number; respond: () => Response }[] = [];
 
   /** 接下来 times 次匹配的请求按 respond 响应。respond 抛错相当于网络中断。 */
@@ -131,6 +132,9 @@ class FakePayPal {
     }
     if (/^\/v1\/customer\/disputes\/[^/]+\/[a-z-]+$/.test(p) && method === 'POST') return json({ links: [] });
     if (/^\/v2\/payments\/captures\/[^/]+\/refund$/.test(p)) return json({ id: 'REFUND-1', status: 'COMPLETED' }, 201);
+    if (method === 'GET' && /^\/v2\/payments\/refunds\/[^/]+$/.test(p)) {
+      return json({ id: p.split('/').pop(), status: this.refundStatus });
+    }
     if (p === '/v2/checkout/orders') {
       return json({ id: 'PPORDER-1', status: 'PAYER_ACTION_REQUIRED', links: [{ rel: 'payer-action', href: 'https://www.sandbox.paypal.com/checkoutnow?token=PPORDER-1', method: 'GET' }] }, 200);
     }
@@ -203,6 +207,10 @@ async function paidOrderClaim() {
     )
     .run(orderId, `SB-T-${seq}`, `CAP-T-${seq}`, JSON.stringify([{ sku: 'X', title: '杯子', quantity: 1 }]), dbm.nowIso());
   const claimId = ingest.createClaim({ merchantId: 'demo-merchant', orderId, origin: 'manual_import', type: 'not_received', status: 'analyzing' });
+  // 这些用例测的是退款重试和对账，不是判定门。先写下一句已同意的商家消息，判定建议才会是退款。
+  dbm.db()
+    .prepare('INSERT INTO messages (id, order_id, sender, text, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(dbm.newId(), orderId, 'merchant', '我们同意退款', dbm.nowIso());
   await pipeline.runAnalysis(claimId, { latencyMs: 0 });
   fake.calls = [];
   return { claimId, captureId: `CAP-T-${seq}`, verdictId: repo.latestVerdict(claimId)!.id };
@@ -951,6 +959,69 @@ describe('防止重复动用资金', () => {
     expect(repo.claimActions(c.claimId)).toHaveLength(1);
   });
 
+  it('退款 PENDING 先记为处理中，不结案；确认完成后再结案', async () => {
+    const c = await paidOrderClaim();
+    fake.failOn('POST', /refund$/, () => json({ id: 'REFUND-PEND', status: 'PENDING' }, 201));
+    const first = await actions.executeAction(actionReq(c, { type: 'refund', payload: { amount: 39 } }));
+    expect(first.status).toBe(202);
+    expect(first.body.status).toBe('processing');
+    expect(repo.getClaim(c.claimId)!.status).not.toBe('closed');
+
+    const again = await actions.executeAction(actionReq(c, { type: 'refund', payload: { amount: 39 } }));
+    expect(again.status).toBe(409);
+    expect(again.body.error).toContain('仍在处理');
+    expect(fake.writes(/refund$/)).toHaveLength(1);
+
+    fake.refundStatus = 'COMPLETED';
+    await sync.settleProcessingRefunds();
+    expect(repo.getClaim(c.claimId)!.status).toBe('closed');
+    expect(repo.claimActions(c.claimId)[0].status).toBe('succeeded');
+  });
+
+  it('退款完成事件把处理中的退款结案', async () => {
+    const c = await paidOrderClaim();
+    fake.failOn('POST', /refund$/, () => json({ id: 'REFUND-WH', status: 'PENDING' }, 201));
+    const first = await actions.executeAction(actionReq(c, { type: 'refund', payload: { amount: 39 } }));
+    expect(first.body.status).toBe('processing');
+    const raw = JSON.stringify({
+      id: 'WH-REFUND-1',
+      event_type: 'PAYMENT.CAPTURE.REFUNDED',
+      resource: { id: 'REFUND-WH', status: 'COMPLETED' },
+    });
+    const headers = new Headers({
+      'paypal-auth-algo': 'SHA256withRSA',
+      'paypal-cert-url': 'https://api.sandbox.paypal.com/cert',
+      'paypal-transmission-id': 'tid',
+      'paypal-transmission-sig': 'sig',
+      'paypal-transmission-time': '2026-11-01T00:00:00Z',
+    });
+    const out = await sync.handleSandboxWebhook(raw, headers);
+    expect(out.status).toBe(200);
+    expect(repo.getClaim(c.claimId)!.status).toBe('closed');
+  });
+
+  it('退款已受理但响应正文无法解析时记为结果不明，不记为普通失败', async () => {
+    const c = await paidOrderClaim();
+    fake.failOn('POST', /refund$/, () => new Response('{', { status: 201, headers: { 'content-type': 'application/json' } }));
+    const parsed = await actions.executeAction(actionReq(c, { type: 'refund', payload: { amount: 39 } }));
+    expect(parsed.status).toBe(502);
+    expect(parsed.body.status).toBe('unknown');
+    expect(repo.getClaim(c.claimId)!.status).not.toBe('closed');
+
+    const c2 = await paidOrderClaim();
+    fake.failOn('POST', /refund$/, () => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.error(new Error('连接中断'));
+        },
+      });
+      return new Response(stream, { status: 201 });
+    });
+    const unread = await actions.executeAction(actionReq(c2, { type: 'refund', payload: { amount: 39 } }));
+    expect(unread.body.status).toBe('unknown');
+    expect(repo.getClaim(c2.claimId)!.status).not.toBe('closed');
+  });
+
   it('不同的键并发也只发一次（比如两个标签页同时点退款）', async () => {
     const c = await paidOrderClaim();
     const refund = { type: 'refund' as const, payload: { amount: 39 } };
@@ -1225,6 +1296,11 @@ describe('后续争议操作：补充说明、确认退货、申诉', () => {
       reason: 'MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED',
       allowed_response_options: { make_offer: { offer_types: ['REFUND', 'REFUND_WITH_RETURN'] } },
     });
+    // 这条争议的判定不是和解。请求体才是这里要核对的，先把建议改成和解。
+    const stored = dbm.db().prepare('SELECT report FROM verdicts WHERE id = ?').get(c.verdictId) as { report: string };
+    const report = JSON.parse(stored.report) as { primaryAction: { type: string } };
+    report.primaryAction = { ...report.primaryAction, type: 'make_offer' };
+    dbm.db().prepare(`UPDATE verdicts SET suggested_action = 'make_offer', report = ? WHERE id = ?`).run(JSON.stringify(report), c.verdictId);
     const view = await views.claimView(c.claimId);
     const offer = view!.followUps.find((f) => f.type === 'make_offer')!;
     expect(offer).toMatchObject({ withReturn: true, label: '提出退货退款' });

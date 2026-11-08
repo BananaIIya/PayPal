@@ -1,5 +1,6 @@
 // 建议动作与草稿。发给买家的文字只说明需要补充什么，不出现指控性措辞。
 
+import { HARD_RULE_CODES } from './catalog';
 import type {
   ActionType,
   CategoryPolicy,
@@ -46,19 +47,59 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
 
   if (claim.alreadyAgreed) return { primary: { ...refund, reason: '双方已就退款达成一致，不再建议反驳。' }, alternatives: [] };
 
-  if (claim.type === 'not_received' && (has('DELIVERY_ADDRESS_MISMATCH') || has('SHIPPED_BEFORE_ORDER'))) {
+  const hardContradiction = signals.some((s) => HARD_RULE_CODES.has(s.code) && s.direction === 'contradicts_claim');
+  if (has('IDENTITY_MISMATCH') && !hardContradiction) {
+    const alternatives = [askLive, refund];
+    if (has('PROVENANCE_CLAIM_UNVERIFIED')) alternatives.push(askOriginal(ctx));
+    if (claim.hasDispute) alternatives.push(evidenceAction(ctx));
     return {
-      primary: { ...refund, reason: '物流记录不能证明包裹送达买家地址，继续反驳的依据不足。' },
-      alternatives: [askMessage(ctx, '核对收货情况', '您好，物流信息显示的签收地址与订单地址不一致，请问您是否更改过收货地址或委托他人代收？我们会据此继续处理。')],
+      primary: {
+        type: 'none',
+        label: '先排查是否错发',
+        reason: '序列号与发货留底不一致。仓库错发会呈现同样的现象。在排除商家履约错误之前，不要把这当成买家欺诈，也不要提交反驳。',
+        paypalOperation: null,
+      },
+      alternatives,
     };
   }
 
   switch (level) {
     case 'low':
+      if (has('PROVENANCE_CLAIM_UNVERIFIED')) return { primary: askOriginal(ctx), alternatives: [askLive] };
+      if (claim.type === 'not_received' && has('DELIVERY_ADDRESS_MISMATCH')) {
+        return {
+          primary: {
+            ...refund,
+            reason: '物流签收邮编和订单收货地址不一致，这份单号不能证明送到了买家，不建议提交给 PayPal。',
+          },
+          alternatives: [
+            askMessage(
+              ctx,
+              '核对收货情况',
+              '您好，物流信息显示的签收地址与订单地址不一致，请问您是否更改过收货地址或委托他人代收？我们会据此继续处理。',
+            ),
+          ],
+        };
+      }
+      if (claim.type === 'not_received' && (has('SHIPPED_BEFORE_ORDER') || has('TRACKING_NOT_DELIVERED') || has('TRACKING_STATUS_UNKNOWN'))) {
+        return {
+          primary: {
+            type: 'none',
+            label: '人工复核',
+            reason: has('SHIPPED_BEFORE_ORDER')
+              ? '物流轨迹早于这笔订单的下单时间，这份单号不能证明是本次发货。先不要退款，也不要提交给 PayPal。'
+              : '物流还没有可核对的签收记录，不能据此退款。',
+            paypalOperation: null,
+          },
+          alternatives: [askLive],
+        };
+      }
       return { primary: refund, alternatives: [askLive] };
 
     case 'insufficient': {
-      if (ctx.missingShots.length || ctx.lowTierShots.length) return { primary: askLive, alternatives: [refund] };
+      // 证据还没立住时不提供退款。执行器也会拒绝，这里让控制台不出现这个按钮。
+      if (has('PROVENANCE_CLAIM_UNVERIFIED')) return { primary: askOriginal(ctx), alternatives: [askLive] };
+      if (ctx.missingShots.length || ctx.lowTierShots.length) return { primary: askLive, alternatives: [] };
       return {
         primary: {
           type: 'none',
@@ -68,16 +109,21 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
             : `缺少可靠证据：${ctx.keyInsufficient.join('；')}。请先补全发货留底或物流信息。`,
           paypalOperation: null,
         },
-        alternatives: [refund, askLive],
+        alternatives: [askLive],
       };
     }
 
     case 'medium': {
+      // 中风险不提供全额退款。执行器也只放行建议本身的那一项，这里让控制台不出现会被拒绝的按钮。
       if (claim.type === 'not_received' && has('DELIVERED_CONFIRMED')) {
-        return { primary: proofOfFulfillmentAction(ctx), alternatives: [refund, askLive] };
+        return { primary: proofOfFulfillmentAction(ctx), alternatives: [askLive] };
       }
+      if (has('PROVENANCE_CLAIM_UNVERIFIED')) return { primary: askOriginal(ctx), alternatives: [askLive] };
       if (claim.type === 'missing_items') {
-        return { primary: offerAction(ctx), alternatives: [askLive, refund] };
+        // 称重对得上只说明“不能确认少件”，不是退款理由。相册图或分析器没跑完时不提议和解。
+        const photosReady = !ctx.incomplete && ctx.missingShots.length === 0 && ctx.lowTierShots.length === 0;
+        if (photosReady && has('WEIGHT_MISMATCH')) return { primary: offerAction(ctx), alternatives: [askLive] };
+        return { primary: askLive, alternatives: [] };
       }
       if (has('NARRATIVE_EVIDENCE_CONFLICT')) {
         return {
@@ -86,27 +132,27 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
             '请买家澄清',
             `您好，我们正在处理您的售后申请。您提供的文字说明和照片在部分细节上需要再确认一下，请您再描述一下收到商品时的情况，并通过此链接补充现场照片：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
           ),
-          alternatives: [askLive, refund],
+          alternatives: [askLive],
         };
       }
-      return { primary: askLive, alternatives: [refund] };
+      if (has('CROSS_EVIDENCE_CONTRADICTION')) {
+        return {
+          primary: askMessage(
+            ctx,
+            '请买家说明',
+            `您好，您提交的照片之间有对不上的地方。请说明哪一份是这次收到的商品，并通过此链接补充现场照片：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
+          ),
+          alternatives: [askLive],
+        };
+      }
+      return { primary: askLive, alternatives: [] };
     }
 
     case 'high': {
       if (claim.hasDispute) {
         const alts: SuggestedAction[] = [];
-        if (has('AI_PROVENANCE_FOUND')) {
-          alts.push(
-            askMessage(
-              ctx,
-              '请买家提供原图',
-              `您好，为了核实问题，请提供未经任何工具编辑的原始照片，或通过此链接现场拍摄：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
-            ),
-          );
-        } else {
-          alts.push(askLive);
-        }
-        alts.push(refund);
+        if (has('PROVENANCE_CLAIM_UNVERIFIED') || has('AI_PROVENANCE_FOUND')) alts.push(askOriginal(ctx));
+        else alts.push(askLive);
         return { primary: evidenceAction(ctx), alternatives: alts };
       }
       // 私下退款请求没有 PayPal 争议可以反驳，先要求补证，暂不退款。
@@ -115,7 +161,7 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
           ...askLive,
           reason: '这是买家绕开 PayPal 提出的请求，没有争议可以提交反驳证据；建议暂不退款，先请买家现场补证。',
         },
-        alternatives: [refund],
+        alternatives: [],
       };
     }
   }
@@ -141,6 +187,17 @@ function refundAction(ctx: Ctx): SuggestedAction {
     paypalOperation: OPERATION.refund(false),
     refundAmount: claim.amount,
     message: `您好，您的售后申请已处理，货款 ${claim.currency} ${claim.amount.toFixed(2)} 已退回原支付账户。给您带来不便，非常抱歉。`,
+  };
+}
+
+function askOriginal(ctx: Ctx): SuggestedAction {
+  return {
+    ...askMessage(
+      ctx,
+      '请买家提供原图',
+      `您好，为了核实问题，请提供未经任何工具编辑的原始照片，或通过此链接现场拍摄：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
+    ),
+    reason: '文件里的来源声明还没有核验签名，不能据此否定索赔。请买家提供未经编辑的原图，或补充独立证据。',
   };
 }
 

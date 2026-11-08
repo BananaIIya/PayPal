@@ -93,6 +93,7 @@ const LAYER_RANK: Record<SourceMark, number> = {
   narrative: 0,
   uploaded: 1,
   manual_import: 1,
+  challenge_pending: 1,
   paypal_dispute: 2,
   live_capture: 3,
   reference: 4,
@@ -178,17 +179,33 @@ async function provenance(ctx: AnalyzerContext): Promise<AnalyzerResult> {
   const clean: EvidenceRow[] = [];
   for (const row of ctx.evidence) {
     const scan = scanProvenance(readFile(row.sha256), row.mime_type);
-    if (scan.aiSourceType || scan.aigcLabel) {
-      const what = scan.aigcLabel && !scan.aiSourceType ? 'AI 生成隐式标识（GB 45438）' : 'C2PA 清单声明的 AI 生成来源';
+    if (scan.fullyGenerated && row.source !== 'reference') {
+      // 签名没有核验，但“整份内容由 AI 从零生成”这种声明只会对提交者不利，没人会为了索赔去伪造它。
+      // 所以不像 AI 修图那样只给中风险下限，而是作为硬规则直接判高风险。
+      const what = row.kind === 'video' ? '整段视频' : '整张图片';
       signals.push(
         signal(
           'AI_PROVENANCE_FOUND',
           'contradicts_claim',
           'strong',
-          0.95,
+          0.9,
           [row],
           null,
-          `文件元数据中包含${what}${scan.generator ? `，生成工具：${scan.generator}` : ''}。`,
+          `文件的 C2PA 清单声明${what}由生成式 AI${scan.generator ? `（${scan.generator}）` : ''}从零生成，不是拍摄后再用 AI 修改的。签名尚未核验，但这类声明只会对提交者不利，不能当作实拍证据。`,
+          { raw: scan, provider: '本地解析' },
+        ),
+      );
+    } else if (scan.aiSourceType || scan.aigcLabel) {
+      const what = scan.aigcLabel && !scan.aiSourceType ? 'GB 45438 隐式标识' : 'C2PA 清单里的 AI 来源声明';
+      signals.push(
+        signal(
+          'PROVENANCE_CLAIM_UNVERIFIED',
+          'contradicts_claim',
+          'moderate',
+          0.7,
+          [row],
+          null,
+          `文件里有${what}${scan.generator ? `（${scan.generator}）` : ''}，但没有核验签名、签署者是否可信，也没有核验声明是否绑在当前内容上。这只说明文件带有一份来源声明，不能证明索赔不成立。需要未经编辑的原图，或其他独立证据。`,
           { raw: scan, provider: '本地解析' },
         ),
       );
@@ -302,7 +319,8 @@ async function origin(ctx: AnalyzerContext): Promise<AnalyzerResult> {
           'strong',
           distance === 0 ? 0.99 : Math.max(0.8, 1 - distance / 120),
           [row],
-          null,
+          // 反证是库里已经存过的历史证据，不按这张图的上传来源降权。
+          'paypal_record',
           `这张图与订单 ${match.order_no} 的历史证据高度相似（感知哈希差异 ${distance}/256），可能套用了其他订单的照片。`,
           {
             raw: { matchedEvidenceId: match.id, matchedOrder: match.order_no, hammingDistance: distance },
@@ -398,38 +416,102 @@ async function consistency(ctx: AnalyzerContext): Promise<AnalyzerResult> {
     }
   }
 
-  // 挑战码：现场拍摄的镜头都应能在画面中读到。视频只要有一帧读到正确的码就算通过。
-  for (const v of videos) {
-    const challenge = v.challenge_id ? ctx.challenges.get(v.challenge_id) : undefined;
-    if (!challenge) continue;
-    const seen = framesOf(v.id).filter((f) => f.attrs.challengeCodeSeen);
-    if (seen.some((f) => norm(f.attrs.challengeCodeSeen) === norm(challenge.code))) continue;
-    if (seen.length) {
+  const challenges = await assessChallenges(ctx);
+  signals.push(...challenges.signals);
+  return { status: 'done', signals };
+}
+
+/**
+ * 核对画面里的挑战码。码一致只是提高可信度的线索，调用方在核验通过后才把拍摄从来源
+ * `challenge_pending` 提升为现场拍摄。这里不写库。
+ * 视频只要有一帧读到正确的码就算通过。识别服务不可用时记为未能核验，不当成“画面里没有码”。
+ */
+export async function assessChallenges(ctx: AnalyzerContext): Promise<{ matchedIds: string[]; signals: SignalDraft[] }> {
+  const matchedIds: string[] = [];
+  const signals: SignalDraft[] = [];
+  const targets = ctx.evidence.filter((e) => e.challenge_id && e.kind !== 'frame' && ctx.challenges.has(e.challenge_id));
+
+  for (const target of targets) {
+    const challenge = ctx.challenges.get(target.challenge_id!)!;
+    const frames = target.kind === 'video' ? ctx.evidence.filter((e) => e.kind === 'frame' && e.parent_id === target.id) : [target];
+    if (target.kind === 'video' && frames.length === 0) {
       signals.push(
-        signal('CHALLENGE_MISMATCH', 'contradicts_claim', 'moderate', 0.85, [seen[0].row], null, `视频画面中的码 ${seen[0].attrs.challengeCodeSeen} 与下发的挑战码 ${challenge.code} 不一致。`, { provider }),
+        signal('CHALLENGE_UNVERIFIED', 'neutral', 'weak', 0.5, [target], null, '视频没有抽出可以核验的画面，挑战码还没核对。核验通过之前，这份拍摄不按现场取证计。', {
+          provider: '未执行',
+        }),
+      );
+      continue;
+    }
+    let looked: Awaited<ReturnType<typeof attributesFor>>;
+    try {
+      looked = await attributesFor(frames, ctx);
+    } catch (e) {
+      if (e instanceof ProviderUnavailable) {
+        signals.push(
+          signal(
+            'CHALLENGE_UNVERIFIED',
+            'neutral',
+            'weak',
+            0.5,
+            [target],
+            null,
+            '画面内容暂时无法识别，挑战码还没核验。核验通过之前，这份拍摄不按现场取证计。',
+            { provider: '未执行' },
+          ),
+        );
+        continue;
+      }
+      throw e;
+    }
+    const provider = providerLabel(looked);
+    const seen = looked.filter((i) => i.attrs.challengeCodeSeen);
+    const hit = seen.find((i) => norm(i.attrs.challengeCodeSeen) === norm(challenge.code));
+    if (hit) {
+      matchedIds.push(target.id);
+      signals.push(
+        signal(
+          'CHALLENGE_MATCHED',
+          'neutral',
+          'weak',
+          0.8,
+          [target],
+          null,
+          `画面中的挑战码与下发的一致（${challenge.code}）。这只是提高可信度的线索，不能单独证明索赔内容。`,
+          { provider },
+        ),
+      );
+    } else if (seen.length) {
+      const sample = seen[0];
+      const where = target.kind === 'video' ? '视频画面' : '画面';
+      signals.push(
+        signal(
+          'CHALLENGE_MISMATCH',
+          'contradicts_claim',
+          'moderate',
+          0.85,
+          [target.kind === 'video' ? sample.row : target],
+          null,
+          `${where}中的码 ${sample.attrs.challengeCodeSeen} 与下发的挑战码 ${challenge.code} 不一致。`,
+          { provider },
+        ),
       );
     } else {
+      const where = target.kind === 'video' ? `视频抽出的 ${frames.length} 帧里都没有` : '画面中没有';
       signals.push(
-        signal('CHALLENGE_MISSING', 'contradicts_claim', 'weak', 0.7, [v], null, `视频抽出的 ${framesOf(v.id).length} 帧里都没有识别到下发的挑战码 ${challenge.code}。也可能只是纸条被遮挡或拍得不清楚。`, { provider }),
+        signal(
+          'CHALLENGE_MISSING',
+          'contradicts_claim',
+          'weak',
+          0.7,
+          [target],
+          null,
+          `${where}识别到下发的挑战码 ${challenge.code}。也可能只是纸条被遮挡或拍得不清楚。`,
+          { provider },
+        ),
       );
     }
   }
-
-  for (const { row, attrs } of items) {
-    if (!row.challenge_id || row.kind === 'frame') continue;
-    const challenge = ctx.challenges.get(row.challenge_id);
-    if (!challenge) continue;
-    if (!attrs.challengeCodeSeen) {
-      signals.push(
-        signal('CHALLENGE_MISSING', 'contradicts_claim', 'weak', 0.7, [row], null, `画面中没有识别到下发的挑战码 ${challenge.code}。也可能只是纸条被遮挡或拍得不清楚。`, { provider }),
-      );
-    } else if (norm(attrs.challengeCodeSeen) !== norm(challenge.code)) {
-      signals.push(
-        signal('CHALLENGE_MISMATCH', 'contradicts_claim', 'moderate', 0.85, [row], null, `画面中的码 ${attrs.challengeCodeSeen} 与下发的挑战码 ${challenge.code} 不一致。`, { provider }),
-      );
-    }
-  }
-  return { status: 'done', signals };
+  return { matchedIds, signals };
 }
 
 // ---------- Plausibility ----------
@@ -523,33 +605,104 @@ async function reference(ctx: AnalyzerContext): Promise<AnalyzerResult> {
   }
 
   // 与下单时商品快照比对，只用快照，不用商家事后修改的商品页。
+  // 只有快照和照片两边都有的字段才能比。一边缺失时记为无法核对，不能当成一致。
   if (ctx.claim.type === 'not_as_described' && ctx.order.listingSnapshot) {
     const snap = ctx.order.listingSnapshot;
-    const differs = buyer.filter(
-      (b) =>
-        (snap.color && b.attrs.color && norm(b.attrs.color) !== norm(snap.color)) ||
-        (snap.model && b.attrs.model && norm(b.attrs.model) !== norm(snap.model)),
-    );
-    if (differs.length) {
+    const fields = [
+      { key: 'color' as const, label: '颜色' },
+      { key: 'model' as const, label: '型号' },
+    ];
+    const diffs: { row: EvidenceRow; label: string; snap: string; seen: string }[] = [];
+    const compared = new Set<string>();
+    const comparedRows: EvidenceRow[] = [];
+    for (const b of buyer) {
+      let used = false;
+      for (const f of fields) {
+        const snapVal = snap[f.key]?.trim();
+        const seen = b.attrs[f.key]?.trim();
+        if (!snapVal || !seen) continue;
+        used = true;
+        compared.add(f.label);
+        if (norm(seen) !== norm(snapVal)) diffs.push({ row: b.row, label: f.label, snap: snapVal, seen });
+      }
+      if (used) comparedRows.push(b.row);
+    }
+    if (diffs.length) {
+      const described = [...new Map(diffs.map((d) => [d.label, d])).values()].map((d) => `${d.label}（快照 ${d.snap}，实物 ${d.seen}）`);
       signals.push(
         signal(
           'SNAPSHOT_DIFFERENCE',
           'supports_claim',
           'moderate',
           0.85,
-          differs.map((d) => d.row),
+          [...new Map(diffs.map((d) => [d.row.id, d.row])).values()],
           null,
-          `实物与下单时快照不一致（快照：${[snap.color, snap.model].filter(Boolean).join('、')}；实物：${[differs[0].attrs.color, differs[0].attrs.model].filter(Boolean).join('、')}）。`,
+          `已核对的字段与下单快照不一致：${described.join('、')}。`,
           { provider, raw: { snapshot: snap } },
         ),
       );
-    } else if (buyer.some((b) => b.attrs.color || b.attrs.model)) {
+    } else if (compared.size) {
+      const unchecked = fields.filter((f) => !compared.has(f.label)).map((f) => f.label);
+      const rest = unchecked.length ? ` ${unchecked.join('、')}没有同时出现在快照和照片里，不能算一致。` : '';
       signals.push(
-        signal('SNAPSHOT_MATCH', 'contradicts_claim', 'moderate', 0.75, buyer.map((b) => b.row), null, '实物的颜色和型号与下单时快照一致。', { provider, raw: { snapshot: snap } }),
+        signal(
+          'SNAPSHOT_MATCH',
+          'contradicts_claim',
+          'moderate',
+          0.75,
+          comparedRows,
+          null,
+          `已核对的字段与下单快照一致（${[...compared].join('、')}）。${rest}`.trim(),
+          { provider, raw: { snapshot: snap, compared: [...compared] } },
+        ),
+      );
+    } else if (buyer.length) {
+      signals.push(
+        signal(
+          'SNAPSHOT_UNVERIFIED',
+          'neutral',
+          'weak',
+          0.6,
+          buyer.map((b) => b.row),
+          null,
+          '下单快照和买家照片没有可以同时核对的颜色或型号，实物是否与下单时一致无法判断。',
+          { provider, raw: { snapshot: snap } },
+        ),
       );
     }
   }
   return { status: 'done', signals };
+}
+
+/** 下单行和模拟轨迹可能在同一次请求里各打一个时间戳。1 分钟以内不当成“单号属于另一票货”。 */
+const SHIPPED_BEFORE_TOLERANCE_MS = 60_000;
+
+function shippedBeforeOrder(firstEvent: string, createdAt: string): boolean {
+  const eventMs = Date.parse(firstEvent);
+  const orderMs = Date.parse(createdAt);
+  if (Number.isNaN(eventMs) || Number.isNaN(orderMs)) return false;
+  return orderMs - eventMs > SHIPPED_BEFORE_TOLERANCE_MS;
+}
+
+/** 轨迹里最早的一条。承运商不一定按时间正序返回。 */
+function earliestEventAt(events: { at: string }[]): string | undefined {
+  let best: { at: string; ms: number } | undefined;
+  for (const event of events) {
+    const ms = Date.parse(event.at);
+    if (Number.isNaN(ms)) continue;
+    if (!best || ms < best.ms) best = { at: event.at, ms };
+  }
+  return best?.at;
+}
+
+/**
+ * 邮编只比实质内容。美国 ZIP+4、大小写和空格不算两个地址。
+ * 95131 和 95131-1234 是同一处；94107 和 10001 仍是两处。
+ */
+function normalizePostal(raw: string): string {
+  const compact = raw.trim().toUpperCase().replace(/[\s-]+/g, '');
+  const us = compact.match(/^(\d{5})(\d{4})?$/);
+  return us ? us[1] : compact;
 }
 
 // ---------- Logistics ----------
@@ -570,25 +723,57 @@ async function logistics(ctx: AnalyzerContext): Promise<AnalyzerResult> {
   const raw = { tracking: t, orderAddress: order.shipAddress };
   const checksDelivery = claim.type === 'not_received' || claim.type === 'return' || claim.type === 'missing_items';
 
-  const firstEvent = t.events[0]?.at;
-  if (firstEvent && firstEvent < order.createdAt && checksDelivery) {
+  const firstEvent = earliestEventAt(t.events);
+  // 同一秒内写入订单和轨迹会差几毫秒。只有早过这个窗口才当成另一票货，否则会盖住“已签收到正确邮编”。
+  if (firstEvent && checksDelivery && shippedBeforeOrder(firstEvent, order.createdAt)) {
     signals.push(
-      signal('SHIPPED_BEFORE_ORDER', 'supports_claim', 'strong', 0.95, carrier, 'carrier_api', `该单号的首个物流事件（${firstEvent.slice(0, 10)}）早于下单时间（${order.createdAt.slice(0, 10)}），不可能是这笔订单的包裹。`, { provider, raw }),
+      signal(
+        'SHIPPED_BEFORE_ORDER',
+        'supports_claim',
+        'strong',
+        0.95,
+        carrier,
+        'carrier_api',
+        `该单号的首个物流事件（${firstEvent}）比下单时间（${order.createdAt}）早超过 1 分钟，不可能是这笔订单的包裹。`,
+        { provider, raw },
+      ),
     );
-  } else if (checksDelivery && t.status === 'delivered') {
-    const orderZip = order.shipAddress?.postalCode;
-    if (orderZip && t.deliveredPostalCode && orderZip !== t.deliveredPostalCode) {
+  } else if (checksDelivery && String(t.status).toLowerCase() === 'delivered') {
+    const orderZipRaw = order.shipAddress?.postalCode?.trim() || '';
+    const deliveredZipRaw = t.deliveredPostalCode?.trim() || '';
+    const orderZip = normalizePostal(orderZipRaw);
+    const deliveredZip = normalizePostal(deliveredZipRaw);
+    const checksAddress = claim.type === 'not_received' || claim.type === 'return';
+    if (orderZip && deliveredZip && orderZip !== deliveredZip) {
       signals.push(
-        signal('DELIVERY_ADDRESS_MISMATCH', 'supports_claim', 'strong', 0.9, carrier, 'carrier_api', `物流签收邮编 ${t.deliveredPostalCode} 与订单收货邮编 ${orderZip} 不一致。`, { provider, raw }),
+        signal('DELIVERY_ADDRESS_MISMATCH', 'supports_claim', 'strong', 0.9, carrier, 'carrier_api', `物流签收邮编 ${deliveredZipRaw} 与订单收货邮编 ${orderZipRaw} 不一致。`, { provider, raw }),
       );
-    } else if (claim.type === 'not_received' || claim.type === 'return') {
+    } else if (checksAddress && orderZip && deliveredZip) {
       signals.push(
-        signal('DELIVERED_CONFIRMED', 'contradicts_claim', 'moderate', 0.95, carrier, 'carrier_api', `物流显示已于 ${(t.deliveredAt ?? '').slice(0, 10)} 签收到订单收货地址（邮编 ${t.deliveredPostalCode ?? '未知'}）。`, { provider, raw }),
+        signal('DELIVERED_CONFIRMED', 'contradicts_claim', 'moderate', 0.95, carrier, 'carrier_api', `物流显示已于 ${(t.deliveredAt ?? '').slice(0, 10)} 签收到订单收货地址（邮编 ${deliveredZipRaw}）。`, { provider, raw }),
+      );
+    } else if (checksAddress) {
+      signals.push(
+        signal(
+          'DELIVERY_ADDRESS_UNVERIFIED',
+          'neutral',
+          'weak',
+          0.6,
+          carrier,
+          'carrier_api',
+          '物流显示已签收，但订单地址或签收邮编缺失，无法确认是否送到订单收货地址。',
+          { provider, raw },
+        ),
       );
     }
+  } else if (checksDelivery && claim.type !== 'missing_items' && String(t.status).toLowerCase() === 'in_transit') {
+    // 还在途中只说明“现在还没签收”，不能把两个关键命题判成已核实，否则会直接建议全额退款。
+    signals.push(
+      signal('TRACKING_NOT_DELIVERED', 'supports_claim', 'moderate', 0.9, carrier, 'carrier_api', '物流尚未显示签收，包裹可能仍在运输途中。', { provider, raw }),
+    );
   } else if (checksDelivery && claim.type !== 'missing_items') {
     signals.push(
-      signal('TRACKING_NOT_DELIVERED', 'supports_claim', 'moderate', 0.9, carrier, 'carrier_api', '物流尚未显示签收。', { provider, raw }),
+      signal('TRACKING_STATUS_UNKNOWN', 'neutral', 'weak', 0.5, carrier, 'carrier_api', '物流状态不明，不能据此判断包裹有没有送到。', { provider, raw }),
     );
   }
 
@@ -642,12 +827,12 @@ async function records(ctx: AnalyzerContext): Promise<AnalyzerResult> {
     const shot = attrs.screenshot;
     if (shot.orderNumber && !ctx.knownOrderNumbers.has(shot.orderNumber)) {
       signals.push(
-        signal('RECORD_NOT_FOUND', 'contradicts_claim', 'strong', 0.9, [row], null, `截图中的订单号 ${shot.orderNumber} 在交易记录中查不到。`, { provider, raw: shot }),
+        signal('RECORD_NOT_FOUND', 'contradicts_claim', 'strong', 0.9, [row], 'paypal_record', `截图中的订单号 ${shot.orderNumber} 在交易记录中查不到。`, { provider, raw: shot }),
       );
     }
     if (shot.orderNumber && ctx.knownOrderNumbers.has(shot.orderNumber) && shot.amount !== null && Math.abs(shot.amount - ctx.order.amount) > 0.01 && shot.orderNumber === ctx.order.orderNo) {
       signals.push(
-        signal('RECORD_NOT_FOUND', 'contradicts_claim', 'strong', 0.85, [row], null, `截图中的金额 ${shot.amount} 与交易记录 ${ctx.order.amount} 不一致。`, { provider, raw: shot }),
+        signal('RECORD_NOT_FOUND', 'contradicts_claim', 'strong', 0.85, [row], 'paypal_record', `截图中的金额 ${shot.amount} 与交易记录 ${ctx.order.amount} 不一致。`, { provider, raw: shot }),
       );
     }
     // 只核对“商家说过的话”：买家自己发的内容不需要在商家消息库里。
@@ -656,8 +841,9 @@ async function records(ctx: AnalyzerContext): Promise<AnalyzerResult> {
     // 消息库里没有这笔订单的任何商家消息时无从比对，不能据此判定截图有问题。
     if (notFound.length && merchantLines.size > 0) {
       const claimsAgreement = notFound.find((l) => AGREED_BY_MERCHANT.test(l.text)) ?? notFound[0];
+      // 反证是商家消息库，不按截图本身的上传来源降权。
       signals.push(
-        signal('SCREENSHOT_CONTENT_MISMATCH', 'contradicts_claim', 'strong', 0.9, [row], null, `截图显示商家说过“${claimsAgreement.text.slice(0, 40)}”，商家消息库中没有这条记录。`, {
+        signal('SCREENSHOT_CONTENT_MISMATCH', 'contradicts_claim', 'strong', 0.9, [row], 'paypal_record', `截图显示商家说过“${claimsAgreement.text.slice(0, 40)}”，商家消息库中没有这条记录。`, {
           provider,
           raw: { notFound, storedMerchantMessages: merchantLines.size },
         }),

@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS evidence (
   claim_id TEXT REFERENCES claims(id),
   order_id TEXT NOT NULL REFERENCES orders(id),
   kind TEXT NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('live_capture','paypal_dispute','uploaded','manual_import','reference')),
+  source TEXT NOT NULL CHECK (source IN ('live_capture','challenge_pending','paypal_dispute','uploaded','manual_import','reference')),
   sha256 TEXT NOT NULL,
   dhash TEXT,
   layer TEXT NOT NULL CHECK (layer IN ('A','B','C','D')),
@@ -210,6 +210,50 @@ CREATE TABLE IF NOT EXISTS paypal_credentials (
 
 const g = globalThis as unknown as { __verdictDb?: DatabaseSync };
 
+/**
+ * 旧库的 evidence.source 检查约束里没有 challenge_pending。SQLite 不能改 CHECK，
+ * 所以把表重建一次。新库的建表语句已经包含这个取值，这里直接跳过。
+ */
+function migrateEvidenceSources(conn: DatabaseSync): void {
+  const row = conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'evidence'").get() as { sql: string } | undefined;
+  if (!row?.sql || row.sql.includes('challenge_pending')) return;
+  const have = new Set((conn.prepare('PRAGMA table_info(evidence)').all() as unknown as { name: string }[]).map((c) => c.name));
+  const wanted = ['id', 'claim_id', 'order_id', 'kind', 'source', 'sha256', 'dhash', 'layer', 'mime_type', 'shot_label', 'challenge_id', 'capture_meta', 'created_at', 'purged_at', 'parent_id'];
+  const copy = wanted.filter((c) => have.has(c));
+  conn.exec('DROP TABLE IF EXISTS evidence_mig');
+  conn.exec('PRAGMA foreign_keys = OFF');
+  conn.exec('BEGIN');
+  try {
+    conn.exec(`CREATE TABLE evidence_mig (
+      id TEXT PRIMARY KEY,
+      claim_id TEXT REFERENCES claims(id),
+      order_id TEXT NOT NULL REFERENCES orders(id),
+      kind TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('live_capture','challenge_pending','paypal_dispute','uploaded','manual_import','reference')),
+      sha256 TEXT NOT NULL,
+      dhash TEXT,
+      layer TEXT NOT NULL CHECK (layer IN ('A','B','C','D')),
+      mime_type TEXT NOT NULL,
+      shot_label TEXT,
+      challenge_id TEXT,
+      capture_meta TEXT,
+      created_at TEXT NOT NULL,
+      purged_at TEXT,
+      parent_id TEXT
+    )`);
+    conn.exec(`INSERT INTO evidence_mig (${copy.join(', ')}) SELECT ${copy.join(', ')} FROM evidence`);
+    conn.exec('DROP TABLE evidence');
+    conn.exec('ALTER TABLE evidence_mig RENAME TO evidence');
+    conn.exec('CREATE INDEX IF NOT EXISTS evidence_claim ON evidence(claim_id)');
+    conn.exec('COMMIT');
+  } catch (e) {
+    conn.exec('ROLLBACK');
+    throw e;
+  } finally {
+    conn.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 function ensureColumn(conn: DatabaseSync, table: string, column: string, ddl: string): void {
   const columns = conn.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
   if (!columns.some((c) => c.name === column)) conn.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
@@ -230,6 +274,7 @@ export function db(): DatabaseSync {
     ensureColumn(conn, 'evidence', 'parent_id', 'parent_id TEXT');
     // 影子模式下执行的动作：处理人员当时看不到判定，事后拿来和判定对照。
     ensureColumn(conn, 'actions', 'shadow', 'shadow INTEGER NOT NULL DEFAULT 0');
+    migrateEvidenceSources(conn);
     g.__verdictDb = conn;
   }
   return g.__verdictDb;

@@ -22,7 +22,7 @@ function summarySection(s: Summary, t: Thresholds): string {
   lines.push(head(['精确率', '召回率', 'PR-AUC', '命中', '误报', '漏报'], ['---:', '---:', '---:', '---:', '---:', '---:']));
   lines.push(row([pct(s.abuse.precision), pct(s.abuse.recall), num(s.abuse.prAuc), s.abuse.tp, s.abuse.fp, s.abuse.fn]));
   if (s.hardRuleHigh.length) {
-    lines.push('', `${s.hardRuleHigh.join('、')} 是硬规则判的高风险，R 低于高风险阈值 ${t.high}；PR-AUC 只按 R 排序，会低估这类样本。`);
+    lines.push('', `${s.hardRuleHigh.join('、')} 判为高风险，但 R 低于高风险阈值 ${t.high}；PR-AUC 只按 R 排序，会低估这类样本。`);
   }
 
   lines.push('', '### 标注 × 判定', '');

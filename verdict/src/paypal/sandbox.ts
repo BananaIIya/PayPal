@@ -261,8 +261,28 @@ export class PayPalSandbox implements PayPalClient {
         continue;
       }
 
-      const text = await res.text();
-      if (res.ok) return (text ? JSON.parse(text) : {}) as T;
+      let text: string;
+      try {
+        text = await res.text();
+      } catch (e) {
+        // 请求可能已经被 PayPal 处理。非查询、且状态不是明确的 4xx 时，不能当成普通失败去重试。
+        const indeterminate = method !== 'GET' && (res.ok || res.status >= 500);
+        throw new PayPalApiError(`PayPal 已响应（HTTP ${res.status}），但读取正文失败：${e instanceof Error ? e.message : String(e)}`, {
+          status: res.status,
+          indeterminate,
+        });
+      }
+      if (res.ok) {
+        if (!text) return {} as T;
+        try {
+          return JSON.parse(text) as T;
+        } catch {
+          throw new PayPalApiError(`PayPal 已响应（HTTP ${res.status}），但正文不是有效的 JSON`, {
+            status: res.status,
+            indeterminate: method !== 'GET',
+          });
+        }
+      }
 
       if (res.status >= 500) {
         attemptsLeft -= 1;
@@ -468,10 +488,20 @@ export class PayPalSandbox implements PayPalClient {
       prefer: 'return=representation',
       safeToRetry: true,
     });
+    if (body.status === 'COMPLETED') {
+      return this.written(op, requestId, { refund_id: body.id, status: body.status, amount: input });
+    }
+    if (body.status === 'PENDING') {
+      return this.written(op, requestId, { refund_id: body.id, status: 'PENDING', pending: true, amount: input });
+    }
     if (body.status === 'FAILED' || body.status === 'CANCELLED') {
       throw new PayPalApiError(`PayPal 退款状态为 ${body.status}，资金没有退回。`);
     }
-    return this.written(op, requestId, { refund_id: body.id, status: body.status, amount: input });
+    throw new PayPalApiError(`PayPal 退款状态不明（${body.status ?? '空'}），请先核对后台，不要重复退款。`, { indeterminate: true });
+  }
+
+  async getRefund(refundId: string): Promise<{ id?: string; status?: string }> {
+    return this.request('GET', `/v2/payments/refunds/${encodeURIComponent(refundId)}`);
   }
 
   // ---------- 沙箱专用的测试接口 ----------

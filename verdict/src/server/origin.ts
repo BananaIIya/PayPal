@@ -14,8 +14,7 @@ export function requestOrigin(req: NextRequest): string {
 }
 
 /**
- * 控制台没有登录，所以其他网站的页面可以向 localhost 发请求。
- * 这些接口现在能操作真实的沙箱账户，要拒绝跨站来的请求。
+ * 控制台有登录。这些接口能操作真实的沙箱账户，仍然拒绝跨站来的请求。
  */
 export function isCrossSite(req: NextRequest): boolean {
   if (req.headers.get('sec-fetch-site') === 'cross-site') return true;

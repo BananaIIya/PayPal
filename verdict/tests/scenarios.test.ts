@@ -35,10 +35,10 @@ afterAll(() => {
 const expectations: [string, string, string[], string[]][] = [
   // 场景、期望判定、必须出现的信号、不能出现的信号
   ['genuine_damage', 'low', ['IDENTITY_MATCH'], ['AI_PROVENANCE_FOUND', 'EVIDENCE_REUSED_ACROSS_CLAIMS']],
-  ['ai_watermark', 'high', ['AI_PROVENANCE_FOUND'], []],
+  ['ai_watermark', 'medium', ['PROVENANCE_CLAIM_UNVERIFIED'], ['AI_PROVENANCE_FOUND']],
   ['reused_image', 'high', ['EVIDENCE_REUSED_ACROSS_CLAIMS'], ['AI_PROVENANCE_FOUND']],
   ['identity_mismatch', 'high', ['IDENTITY_MISMATCH'], ['EVIDENCE_REUSED_ACROSS_CLAIMS']],
-  ['cross_contradiction', 'high', ['CROSS_EVIDENCE_CONTRADICTION'], []],
+  ['cross_contradiction', 'medium', ['CROSS_EVIDENCE_CONTRADICTION'], []],
   ['fake_chat', 'high', ['SCREENSHOT_CONTENT_MISMATCH'], []],
   ['synthetic_no_watermark', 'medium', ['SYNTHETIC_LIKELY', 'NO_PROVENANCE'], ['AI_PROVENANCE_FOUND']],
   ['narrative_conflict', 'medium', ['NARRATIVE_EVIDENCE_CONFLICT'], []],
@@ -74,11 +74,38 @@ describe('验收场景', () => {
     }
   });
 
-  it('带 AI 标识时列出正常解释，并给出“请买家提供原图”的备选动作', () => {
+  it('带 AI 标识时列为来源声明未验证，并建议请买家提供原图', () => {
     const r = byKey.get('ai_watermark')!.report;
-    const finding = r.findings.find((f) => f.code === 'AI_PROVENANCE_FOUND')!;
+    const finding = r.findings.find((f) => f.code === 'PROVENANCE_CLAIM_UNVERIFIED')!;
+    expect(finding.hardRule).toBe(false);
     expect(finding.normalExplanations.join()).toContain('圈出了瑕疵');
-    expect(r.alternatives.map((a) => a.label)).toContain('请买家提供原图');
+    expect(r.headline).toContain('来源声明未验证');
+    expect(r.primaryAction.label).toBe('请买家提供原图');
+    expect(r.notices.join()).toContain('不能当作索赔不成立的依据');
+  });
+
+  it('序列号不符时判高风险，但仍先排查错发，不直接建议反驳', () => {
+    const r = byKey.get('identity_mismatch')!.report;
+    expect(r.level).toBe('high');
+    expect(r.findings.find((f) => f.code === 'IDENTITY_MISMATCH')!.hardRule).toBe(false);
+    expect(r.headline).toContain('先排查是否错发');
+    expect(r.primaryAction.label).toBe('先排查是否错发');
+    expect(r.notices.join()).toContain('错发');
+    expect(r.primaryAction.type).toBe('none');
+  });
+
+  it('照片之间数量不一致时只到中风险，请买家说明', () => {
+    const r = byKey.get('cross_contradiction')!.report;
+    expect(r.level).toBe('medium');
+    expect(r.findings.find((f) => f.code === 'CROSS_EVIDENCE_CONTRADICTION')!.hardRule).toBe(false);
+    expect(r.primaryAction.label).toBe('请买家说明');
+    expect(r.primaryAction.type).toBe('send_message');
+  });
+
+  it('已签收且邮编一致时才确认送到订单地址', () => {
+    const finding = byKey.get('delivered_not_received')!.report.findings.find((f) => f.code === 'DELIVERED_CONFIRMED')!;
+    expect(finding.explanation).toContain('94107');
+    expect(finding.explanation).not.toContain('未知');
   });
 
   it('已签收的未收到货争议建议提交物流证据', () => {
@@ -95,7 +122,9 @@ describe('验收场景', () => {
   });
 
   it('少件场景建议部分退款和解', () => {
-    expect(byKey.get('partial_missing')!.report.primaryAction.type).toBe('make_offer');
+    const partial = byKey.get('partial_missing')!.report;
+    expect(partial.primaryAction.type).toBe('make_offer');
+    expect(partial.alternatives.map((a) => a.type)).not.toContain('refund');
   });
 
   it('证据不足场景一次性列出缺失镜头', () => {

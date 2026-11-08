@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 
 const CHALLENGE_TTL_MS = 15 * 60 * 1000;
 
-/** 登记证据（照片或短视频）。带有效挑战的算现场拍摄（B 层），否则算相册上传（C 层）。 */
+/** 登记证据（照片或短视频）。带有效挑战的先记为待核验（C 层），画面里的码核对通过后才提升。否则算相册上传。 */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   await ready();
   const { token } = await params;
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
   const base = {
     claimId: claim.id,
     orderId: claim.order_id,
-    source: challengeId ? ('live_capture' as const) : ('uploaded' as const),
+    source: challengeId ? ('challenge_pending' as const) : ('uploaded' as const),
     file: buf,
     shot,
     challengeId,
@@ -66,6 +66,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
   };
   const ev = video ? await addVideoEvidence({ ...base, mime: video }) : await addEvidence({ ...base, mime: mime! });
   const what = video ? '视频' : '证据';
-  addTimeline(claim.id, 'evidence', challengeId ? `现场拍摄${what}上传` : `相册${what}上传`, shot ?? undefined);
+  addTimeline(claim.id, 'evidence', challengeId ? `挑战拍摄，待核验` : `相册${what}上传`, shot ?? undefined);
   return NextResponse.json({ evidenceId: ev.id, sha256: ev.sha256, layer: ev.layer, ...(video ? { kind: 'video' } : {}) });
 }

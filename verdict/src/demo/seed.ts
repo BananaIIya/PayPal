@@ -136,7 +136,7 @@ const SCENARIOS: ScenarioSpec[] = [
   },
   {
     key: 'ai_watermark',
-    meta: { title: '带水印的 AI 编辑', story: '买家提交的损坏近景带有 C2PA 清单，声明由 AI 生成。这里的解析是真实运行的。', expected: '高风险，同时列出“AI 标注”等正常解释', expectedLevel: 'high' },
+    meta: { title: '带水印的 AI 编辑', story: '买家提交的损坏近景带有 C2PA 清单，声明照片经过 AI 编辑。这里的解析是真实运行的，但没有核验签名。', expected: '来源声明未验证，至少中风险，需要原图', expectedLevel: 'medium' },
     origin: 'paypal_dispute',
     type: 'damaged',
     narrative: '杯子碎了，见照片。',
@@ -164,7 +164,7 @@ const SCENARIOS: ScenarioSpec[] = [
   },
   {
     key: 'identity_mismatch',
-    meta: { title: '身份特征不符', story: '现场拍摄到的序列号和发货留底不同。', expected: '高风险，正常解释包括仓库错发', expectedLevel: 'high' },
+    meta: { title: '身份特征不符', story: '现场拍摄到的序列号和发货留底不同。仓库错发会呈现同样的现象。', expected: '高风险，但先排查是否错发，不直接反驳', expectedLevel: 'high' },
     origin: 'paypal_dispute',
     type: 'damaged',
     narrative: '耳机外壳有划痕，无法正常充电。',
@@ -186,7 +186,7 @@ const SCENARIOS: ScenarioSpec[] = [
   },
   {
     key: 'cross_contradiction',
-    meta: { title: '证据相互矛盾', story: '同一索赔的两张整体照里，商品数量不一致。', expected: '高风险', expectedLevel: 'high' },
+    meta: { title: '证据相互矛盾', story: '同一索赔的两张整体照里，商品数量不一致。没有外部反证，不能当成已确认滥用。', expected: '中风险，请买家说明哪一份是这单的货', expectedLevel: 'medium' },
     origin: 'portal',
     type: 'damaged',
     narrative: '收到时螃蟹全部死了。',
@@ -505,7 +505,8 @@ export async function seedDemo(opts: SeedOptions = {}): Promise<SeededClaim[]> {
     } else {
       const scene = challengeCode ? ({ ...spec.scene, code: challengeCode } as Scene) : spec.scene;
       buf = await renderScene(scene);
-      if (spec.c2pa) buf = injectSimulatedC2PA(buf);
+      // 演示场景是“AI 编辑”：写入修图清单，走中风险下限；从零生成的清单会触发硬规则。
+      if (spec.c2pa) buf = injectSimulatedC2PA(buf, { edited: true });
     }
     if (spec.name) named.set(spec.name, buf);
     if (claimId && opts.transform) buf = await opts.transform(buf);

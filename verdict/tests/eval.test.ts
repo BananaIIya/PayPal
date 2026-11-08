@@ -154,14 +154,15 @@ describe('跑评估', () => {
     expect(r.leaks).toEqual([]);
     const s = r.summaries.all;
     expect(s.legitFalsePositives).toMatchObject({ total: 7, count: 0 });
-    // 三个已确认滥用都判了高风险；另有两个疑似异常也判了高风险。
-    expect(s.abuse).toMatchObject({ tp: 3, fn: 0, fp: 2, recall: 1, precision: 0.6 });
+    // 现场序列号不符升到高风险，照片互相矛盾不再硬判高风险。三笔已确认滥用都应命中，且没有疑似样本被判高风险。
+    expect(s.abuse).toMatchObject({ tp: 3, fn: 0, fp: 0, recall: 1, precision: 1 });
     expect(s.confusion.legit.insufficient).toBe(1); // 检测服务不可用的那笔
-    // 重新压缩会去掉图片里的 C2PA 清单：这是形式变化下唯一改变判定的样本。
+    // 重新压缩会去掉 C2PA。带 AI 来源声明的那笔因此从中风险回到证据不足，其余等级不变。
     const t = r.robustness[0];
     expect(t.applicable).toBe(16);
-    expect(t.changes.map((c) => c.id)).toEqual(['ai_watermark']);
-    expect(t.changes[0].lost).toContain('AI_PROVENANCE_FOUND');
+    expect(t.changes).toEqual([
+      expect.objectContaining({ id: 'ai_watermark', from: 'medium', to: 'insufficient', lost: ['PROVENANCE_CLAIM_UNVERIFIED'] }),
+    ]);
 
     const md = report.renderReport(r);
     expect(md).toContain('合法售后被判为中、高风险的比例');

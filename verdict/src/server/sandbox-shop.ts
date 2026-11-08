@@ -76,7 +76,9 @@ export async function completeTestOrder(token: string): Promise<{ orderId: strin
   const captured = await requireSandbox().captureOrder(token, `capture-${order.id}`);
   const items = JSON.parse(order.items) as { weightG?: number }[];
   const weightG = items[0]?.weightG;
-  const paidAt = Date.now();
+  // 轨迹不能早于订单行。两边各取一次时钟时，后写的下单时间会比先取的揽收时间晚几毫秒。
+  const createdMs = new Date(order.created_at).getTime();
+  const paidAt = Math.max(Date.now(), Number.isNaN(createdMs) ? 0 : createdMs);
   const postalCode = captured.address?.postalCode;
   const tracking: TrackingResult = {
     status: 'delivered',

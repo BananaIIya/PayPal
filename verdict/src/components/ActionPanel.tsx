@@ -50,7 +50,13 @@ interface Props {
 }
 
 const STUCK_PENDING_MS = 2 * 60 * 1000;
-const STATUS_TEXT: Record<string, string> = { succeeded: '成功', failed: '失败', unknown: '结果不明', pending: '执行中' };
+const STATUS_TEXT: Record<string, string> = {
+  succeeded: '成功',
+  failed: '失败',
+  unknown: '结果不明',
+  pending: '执行中',
+  processing: '退款处理中',
+};
 
 export function ActionPanel({ claimId, verdictId, options, shadow, claim, order, allowed, actions, paypal, canConfirmFunds, onDone }: Props) {
   const [index, setIndex] = useState(0);
@@ -100,8 +106,10 @@ export function ActionPanel({ claimId, verdictId, options, shadow, claim, order,
   const unresolved = actions.find(
     (a) => a.status === 'unknown' || (a.status === 'pending' && Date.now() - new Date(a.confirmedAt).getTime() > STUCK_PENDING_MS),
   );
+  const processing = actions.find((a) => a.status === 'processing');
 
   const reconcileLocked = !!unresolved && FUND_ACTIONS.has(unresolved.type as ActionType) && !canConfirmFunds;
+  const processingLocked = !!processing && FUND_ACTIONS.has(processing.type as ActionType) && !canConfirmFunds;
 
   const payload = (current: SuggestedAction) => ({
     message: current.type === 'send_message' || current.type === 'refund' ? message : undefined,
@@ -192,6 +200,21 @@ export function ActionPanel({ claimId, verdictId, options, shadow, claim, order,
   return (
     <section className="card card-pad action-card">
       <h2>{shadow ? '动作' : '建议动作'}</h2>
+      {processing && (
+        <div className="notice notice-info" style={{ marginBottom: 12 }}>
+          <strong>退款处理中。</strong>
+          退款已提交给 PayPal，状态仍是处理中，这笔索赔先不结案。同步或收到完成事件后会自动更新。若已在 PayPal 后台看到最终结果，可以手动标记。
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn" disabled={busy || processingLocked} onClick={() => reconcile(processing.id, 'succeeded')}>
+              已完成
+            </button>
+            <button className="btn" disabled={busy || processingLocked} onClick={() => reconcile(processing.id, 'failed')}>
+              未完成
+            </button>
+          </div>
+          {processingLocked && <div className="small" style={{ marginTop: 6 }}>这是资金动作，只有店主可以核对结果。</div>}
+        </div>
+      )}
       {unresolved && (
         <div className="notice notice-danger" style={{ marginBottom: 12 }}>
           <strong>{TYPE_LABEL[unresolved.type] ?? unresolved.type}的结果不明。</strong>
@@ -257,7 +280,7 @@ export function ActionPanel({ claimId, verdictId, options, shadow, claim, order,
             <p className="muted small">这个判定没有可以直接执行的动作。</p>
           ) : (
             <>
-              <button className={`btn ${MONEY_ACTIONS.has(current.type) ? 'btn-danger' : 'btn-primary'}`} style={{ width: '100%' }} disabled={!isAllowed || !!unresolved || fundLocked} onClick={openConfirm}>
+              <button className={`btn ${MONEY_ACTIONS.has(current.type) ? 'btn-danger' : 'btn-primary'}`} style={{ width: '100%' }} disabled={!isAllowed || !!unresolved || !!processing || fundLocked} onClick={openConfirm}>
                 {current.label}…
               </button>
               {fundLocked && isAllowed && (

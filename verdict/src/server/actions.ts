@@ -1,5 +1,9 @@
 // 动作执行器：系统里唯一调用 PayPal 写接口的地方。
-// 校验顺序对齐开发文档：confirm 为 true → verdictId 是最新判定 → 动作在 PayPal 当前允许的操作内。
+// 校验顺序对齐开发文档：confirm 为 true → verdictId 是最新判定 →
+// 退款、接受索赔、直接退款式的和解，只有判定建议本身就是这一项时才执行
+// （低风险、双方已同意，或少件场景的部分和解）。序列号不符时退款仍可执行，用来处理可能的错发。
+// 先退货再退款同样只有建议本身是和解时才执行。影子模式同样受限。
+// 然后才检查动作在 PayPal 当前允许的操作内。
 // actions.confirmed_by 和 confirmed_at 非空：没有商家确认记录的动作写不进库，也就发不出去。
 // 资金动作（FUND_ACTIONS）只有店主能确认，客服只能发消息、交证据、升级和申诉。
 //
@@ -13,7 +17,7 @@ import { buildEvidenceDocuments } from './attachments';
 import { actorLabel } from './auth';
 import { db, newId, nowIso } from './db';
 import { upsertClaimFromDispute } from './paypal-sync';
-import { addTimeline, getClaim, getOrder, latestVerdict, merchantReturnAddress, shadowModeOn, type ClaimRow, type OrderRow } from './repo';
+import { addTimeline, getClaim, getOrder, latestVerdict, merchantAgreedRefund, merchantReturnAddress, shadowModeOn, type ClaimRow, type OrderRow } from './repo';
 import { issuePortalToken } from './tokens';
 
 export interface ActionRequest {
@@ -49,6 +53,33 @@ export interface Actor {
 export type ActionOutcome = { status: number; body: Record<string, unknown> };
 
 const FUND_DENIED = '退款、接受索赔、和解和确认收到退货会动用资金，只有店主可以确认';
+
+/** 这些动作会把钱退给买家。只有判定建议本身就是这一项时才能执行。 */
+const BUYER_PAYOUT: ReadonlySet<ActionType> = new Set<ActionType>(['refund', 'accept_claim', 'make_offer']);
+
+export function identityRefundAllowed(findings: { code: string; direction: string; hardRule?: boolean }[]): boolean {
+  const identity = findings.some((f) => f.code === 'IDENTITY_MISMATCH' && f.direction === 'contradicts_claim');
+  const hard = findings.some((f) => f.hardRule);
+  return identity && !hard;
+}
+
+export function payoutBlockedByVerdict(
+  verdict: { level: string; suggestedAction: string; identityRefund?: boolean; alreadyAgreed?: boolean },
+  action: { type: string; withReturn?: boolean },
+): string | null {
+  if (!BUYER_PAYOUT.has(action.type as ActionType)) return null;
+  const fullPayout = action.type === 'refund' || action.type === 'accept_claim';
+  // 全额退款只在低风险、双方已同意，或序列号不符需要排查错发时放行。中风险的和解不受这一条限制。
+  if (fullPayout && (verdict.level === 'medium' || verdict.level === 'high') && !verdict.identityRefund && !verdict.alreadyAgreed) {
+    return '这次判定是中风险或高风险，不能全额退款或接受索赔。';
+  }
+  if (verdict.suggestedAction === action.type) return null;
+  if (verdict.identityRefund && (action.type === 'refund' || action.type === 'accept_claim')) return null;
+  if (verdict.level === 'insufficient') {
+    return '判定仍是证据不足，不能退款、接受索赔或提出和解。请先补证，重新分析后再决定。';
+  }
+  return '这次判定没有建议退款。退款、接受索赔和和解都不会执行。';
+}
 
 const VALID_TYPES: ActionType[] = [
   'refund',
@@ -211,7 +242,16 @@ function replay(previous: PreviousAction): ActionOutcome {
   const body = { actionId: previous.id, status: previous.status, response, replay: true };
   if (previous.status === 'succeeded') return { status: 200, body };
   if (previous.status === 'pending') return { status: 409, body: { ...body, error: '这个动作正在执行，请稍候' } };
+  if (previous.status === 'processing') {
+    return { status: 409, body: { ...body, error: '退款已提交，PayPal 仍在处理，完成前不能再次退款' } };
+  }
   return { status: 502, body: { ...body, error: (response?.error as string | undefined) ?? '这个动作上次没有成功' } };
+}
+
+function inFlightMessage(status: string): string {
+  if (status === 'pending') return '这笔索赔有一个动作正在执行，请稍候';
+  if (status === 'processing') return '退款已提交，PayPal 仍在处理，完成前不能再次退款';
+  return '这笔索赔有一个结果不明的动作，请先核对 PayPal 后台并标记结果';
 }
 
 export async function executeAction(req: ActionRequest): Promise<ActionOutcome> {
@@ -233,6 +273,19 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
   if (!verdict || verdict.id !== req.verdictId) {
     return { status: 409, body: { error: '判定已更新，请查看最新结果后再确认', latestVerdictId: verdict?.id ?? null } };
   }
+  // 页面和直接打这个接口走同一条限制。影子模式不展示判定，但也不能借此把钱退出去。
+  const shadow = shadowModeOn(claim.merchant_id);
+  const report = JSON.parse(verdict.report) as { findings?: { code: string; direction: string; hardRule?: boolean }[] };
+  const blocked = payoutBlockedByVerdict(
+    {
+      level: verdict.level,
+      suggestedAction: verdict.suggested_action,
+      identityRefund: identityRefundAllowed(report.findings ?? []),
+      alreadyAgreed: merchantAgreedRefund(order.id),
+    },
+    { type: req.type, withReturn: req.payload.withReturn },
+  );
+  if (blocked) return { status: 409, body: { error: blocked } };
 
   // 动作前绕过缓存：商家看到的状态可能已经过期，这里以 PayPal 此刻的状态为准。
   const state = await paypalState(claim, order, { fresh: true });
@@ -245,7 +298,6 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
   if (invalid) return { status: 400, body: { error: invalid } };
 
   // 影子模式下不自动附件：报告会透露判定，自动挑选的证据图片来自反驳索赔的信号，同样会透露。
-  const shadow = shadowModeOn(claim.merchant_id);
   if (shadow) req = { ...req, payload: { ...req.payload, attachEvidence: false, attachReport: false } };
 
   const wantsFiles = ATTACHMENT_TYPES.has(req.type) && (req.payload.attachEvidence || (EVIDENCE_TYPES.has(req.type) && req.payload.attachReport));
@@ -261,14 +313,14 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
   if (latestVerdict(claim.id)?.id !== verdict.id) {
     return { status: 409, body: { error: '判定已更新，请查看最新结果后再确认', latestVerdictId: latestVerdict(claim.id)?.id ?? null } };
   }
-  const inFlight = conn.prepare("SELECT id, status FROM actions WHERE claim_id = ? AND status IN ('pending', 'unknown') LIMIT 1").get(claim.id) as
+  const inFlight = conn.prepare("SELECT id, status FROM actions WHERE claim_id = ? AND status IN ('pending', 'unknown', 'processing') LIMIT 1").get(claim.id) as
     | { id: string; status: string }
     | undefined;
   if (inFlight) {
     return {
       status: 409,
       body: {
-        error: inFlight.status === 'pending' ? '这笔索赔有一个动作正在执行，请稍候' : '这笔索赔有一个结果不明的动作，请先核对 PayPal 后台并标记结果',
+        error: inFlightMessage(inFlight.status),
         blockedBy: inFlight.id,
       },
     };
@@ -292,6 +344,11 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
     const response: PayPalWriteResult = { ...result };
     if (documents.length) response.documents = documents.map((d) => d.name);
     if (bundle.reportSkipped) response.reportSkipped = bundle.reportSkipped;
+    if (result.status === 'PENDING') {
+      conn.prepare("UPDATE actions SET status = 'processing', paypal_response = ? WHERE id = ?").run(JSON.stringify(response), actionId);
+      addTimeline(claim.id, 'action', '退款处理中', `确认人：${actorLabel(req.actor.id)}；${response.operation}`);
+      return { status: 202, body: { actionId, status: 'processing', response } };
+    }
     conn.prepare("UPDATE actions SET status = 'succeeded', paypal_response = ? WHERE id = ?").run(JSON.stringify(response), actionId);
     const after = AFTER_ACTION[req.type];
     conn.prepare('UPDATE claims SET status = ? WHERE id = ?').run(after.status, claim.id);
@@ -320,7 +377,7 @@ export function resolveAction(input: { claimId: string; actionId: string; outcom
   // 标记资金动作“已生效/没生效”会决定要不要重新退款，和确认资金动作同样要店主来做。
   if (FUND_ACTIONS.has(action.type) && input.actor.role !== 'owner') return { status: 403, body: { error: '这是资金动作，只有店主可以核对结果' } };
   const stuck = action.status === 'pending' && Date.now() - new Date(action.confirmed_at).getTime() > STUCK_PENDING_MS;
-  if (action.status !== 'unknown' && !stuck) return { status: 409, body: { error: '这个动作不需要对账' } };
+  if (action.status !== 'unknown' && action.status !== 'processing' && !stuck) return { status: 409, body: { error: '这个动作不需要对账' } };
 
   const response = {
     ...(action.paypal_response ? (JSON.parse(action.paypal_response) as Record<string, unknown>) : {}),

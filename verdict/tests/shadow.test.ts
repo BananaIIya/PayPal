@@ -71,6 +71,8 @@ describe('影子模式', () => {
     expect(v.paypal.attachments).toBe(0);
     expect(v.paypal.reportAvailable).toBe(false);
     expect(v.actionOptions.length).toBeGreaterThan(1);
+    expect(v.actionOptions.map((o) => o.type)).not.toContain('accept_claim');
+    expect(v.actionOptions.map((o) => o.type)).not.toContain('refund');
     for (const o of v.actionOptions) {
       expect(o.reason).toContain('影子模式');
       expect(o.attachReport).toBeFalsy();
@@ -90,15 +92,15 @@ describe('影子模式', () => {
   });
 
   it('影子模式下动作即使要求附报告和证据也不附，动作记录标为影子模式', async () => {
-    const d = claimByScenario('ai_watermark');
-    const res = await act(d, 'accept_claim', { notes: '接受买家索赔。', attachReport: true, attachEvidence: true });
+    const d = claimByScenario('genuine_damage');
+    const res = await act(d, 'refund', { amount: 48, message: '您好，货款已退回。', attachReport: true, attachEvidence: true });
     expect(res.status).toBe(200);
     const row = db.db().prepare('SELECT shadow, payload FROM actions WHERE claim_id = ?').get(d.claim.id) as { shadow: number; payload: string };
     expect(row.shadow).toBe(1);
     expect(JSON.parse(row.payload)).toMatchObject({ attachReport: false, attachEvidence: false });
   });
 
-  it('对照：高风险判定建议反驳、人工接受索赔，记为方向相反；建议补证、人工发消息，记为一致', async () => {
+  it('对照：建议反驳而人工退款记为方向相反；建议补证、人工发消息记为一致', async () => {
     const d = claimByScenario('narrative_conflict');
     const suggested = (JSON.parse(repo.latestVerdict(d.claim.id)!.report) as import('@/core/types').VerdictReport).primaryAction.type;
     expect(suggested).toBe('send_message');
@@ -109,14 +111,27 @@ describe('影子模式', () => {
     expect(c.blindOnly).toBe(true);
     expect(c.blindDecided).toBe(2);
     const byOrder = new Map(c.rows.map((r) => [r.claimId, r]));
-    const opposite = byOrder.get(claimByScenario('ai_watermark').claim.id)!;
-    expect(opposite).toMatchObject({ level: 'high', system: 'contest', merchant: 'refund', agree: false, opposite: true, shadow: true });
+    const genuine = byOrder.get(claimByScenario('genuine_damage').claim.id)!;
+    expect(genuine).toMatchObject({ level: 'low', system: 'refund', merchant: 'refund', agree: true, opposite: false, shadow: true });
+    const delivered = claimByScenario('delivered_not_received');
+    expect((await act(delivered, 'accept_claim', { notes: '接受买家索赔。' })).status).toBe(409);
+    expect(repo.claimActions(delivered.claim.id)).toHaveLength(0);
+    // 资金动作已被判定拦住。对照统计仍要覆盖“系统建议反驳、记录里是退款”，所以直接写入一条已成功的动作。
+    db.db()
+      .prepare(
+        `INSERT INTO actions (id, claim_id, verdict_id, type, payload, confirmed_by, confirmed_at, status, shadow)
+         VALUES (?, ?, ?, 'accept_claim', '{}', 'demo-owner', ?, 'succeeded', 1)`,
+      )
+      .run(crypto.randomUUID(), delivered.claim.id, delivered.verdict!.id, new Date().toISOString());
+    const again = shadow.shadowComparison(merchantId);
+    const opposite = new Map(again.rows.map((r) => [r.claimId, r])).get(delivered.claim.id)!;
+    expect(opposite).toMatchObject({ level: 'medium', system: 'contest', merchant: 'refund', agree: false, opposite: true, shadow: true });
     expect(byOrder.get(d.claim.id)).toMatchObject({ system: 'ask', merchant: 'ask', agree: true, opposite: false });
-    expect(c.agree).toBe(1);
-    expect(c.agreementRate).toBe(0.5);
-    expect(c.opposite).toBe(1);
-    expect(c.matrix.high.refund).toBe(1);
-    expect(c.byLevel.find((l) => l.level === 'high')).toMatchObject({ total: 1, agree: 0 });
+    expect(again.agree).toBe(2);
+    expect(again.agreementRate).toBeCloseTo(2 / 3);
+    expect(again.opposite).toBe(1);
+    expect(again.blindDecided).toBe(3);
+    expect(again.matrix.medium.refund).toBe(1);
   });
 
   it('一笔索赔先发消息、后反驳时，取反驳作为决定', async () => {
@@ -144,7 +159,7 @@ describe('影子模式', () => {
     expect((await act(d, 'send_message', { message: '您好，请补充照片。' })).status).toBe(200);
     const blind = shadow.shadowComparison(merchantId);
     expect(blind.rows.some((r) => r.claimId === d.claim.id)).toBe(false);
-    expect(blind.totalDecided).toBe(3);
+    expect(blind.totalDecided).toBe(4);
     const all = shadow.shadowComparison(merchantId, { blindOnly: false });
     expect(all.rows.find((r) => r.claimId === d.claim.id)?.shadow).toBe(false);
   });

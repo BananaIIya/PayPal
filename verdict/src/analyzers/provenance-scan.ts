@@ -7,11 +7,22 @@ export interface ProvenanceScan {
   aiSourceType: boolean;
   aigcLabel: boolean;
   generator: string | null;
+  /**
+   * C2PA 清单声明整份内容由生成式模型从零生成，而不是拍摄后再用 AI 修改。
+   * 判断依据：有 c2pa.created，来源类型是 trainedAlgorithmicMedia 或 algorithmicMedia；
+   * 同时没有 c2pa.opened、c2pa.placed、parentOf（基于已有素材）或 composite 来源类型（AI 修图）。
+   * 拿不准时一律算 false，交给“来源声明未验证”那一档处理。
+   */
+  fullyGenerated: boolean;
   containers: string[];
 }
 
 const AI_SOURCE_TYPES = ['trainedAlgorithmicMedia', 'compositeWithTrainedAlgorithmicMedia', 'algorithmicMedia'];
-const GENERATOR_RE = /(ChatGPT|OpenAI|DALL[·.\- ]?E|Sora|Gemini|Imagen|Adobe[ _]Firefly|Firefly|Midjourney|Stable[ _]Diffusion|Flux|Doubao|Kling)/i;
+const GENERATOR_RE =
+  /(ChatGPT|OpenAI|DALL[·.\- ]?E|Sora|Gemini|Imagen|Adobe[ _]Firefly|Firefly|Midjourney|Stable[ _]Diffusion|Flux|Doubao|Kling|Grok(?: Imagine)?|xAI)/i;
+/** 完整的 IPTC 词条 URL，前面带斜杠，避免把 compositeWithTrainedAlgorithmicMedia 也算进来。 */
+const GENERATED_SOURCE_TYPE_RE = /digitalsourcetype\/(trainedAlgorithmicMedia|algorithmicMedia)/;
+const DERIVED_FROM_EXISTING_RE = /c2pa\.opened|c2pa\.placed|parentOf|compositeWithTrainedAlgorithmicMedia/;
 
 function pngChunks(buf: Buffer): { type: string; data: Buffer }[] {
   const chunks: { type: string; data: Buffer }[] = [];
@@ -130,6 +141,12 @@ export function scanProvenance(buf: Buffer, mime: string): ProvenanceScan {
   // GB 45438-2025 附录 E：XMP 中的 TC260:AIGC，或 PNG 文本块中以 AIGC 为键的 JSON。
   const aigcLabel = /TC260:AIGC|tc260\.org\.cn\/ns\/AIGC|(^|\0)AIGC\0|"AIGC"\s*:/.test(metaText);
   const generator = manifestText.match(GENERATOR_RE)?.[1] ?? (aigcLabel ? metaText.match(GENERATOR_RE)?.[1] : null) ?? null;
+  // 只看 C2PA 清单本身：XMP 里的来源类型没有动作记录，分不清是生成还是修图。
+  const fullyGenerated =
+    manifests.length > 0 &&
+    manifestText.includes('c2pa.created') &&
+    GENERATED_SOURCE_TYPE_RE.test(manifestText) &&
+    !DERIVED_FROM_EXISTING_RE.test(manifestText);
 
-  return { c2paManifest: manifests.length > 0, aiSourceType, aigcLabel, generator, containers };
+  return { c2paManifest: manifests.length > 0, aiSourceType, aigcLabel, generator, fullyGenerated, containers };
 }

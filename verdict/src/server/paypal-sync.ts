@@ -9,6 +9,7 @@ import { startAnalysis } from './pipeline';
 import { addTimeline, type ClaimRow, type OrderRow } from './repo';
 
 const DISPUTE_EVENTS = new Set(['CUSTOMER.DISPUTE.CREATED', 'CUSTOMER.DISPUTE.UPDATED', 'CUSTOMER.DISPUTE.RESOLVED']);
+const REFUND_EVENT = 'PAYMENT.CAPTURE.REFUNDED';
 
 export type UpsertResult =
   | { outcome: 'created' | 'linked' | 'updated' | 'unchanged'; claimId: string }
@@ -162,7 +163,7 @@ export async function handleSandboxWebhook(raw: string, headers: { get(name: str
   }
   if (!verified) return { status: 401, body: { error: '验签失败' } };
 
-  const event = JSON.parse(raw) as { id: string; event_type: string; resource?: { dispute_id?: string; id?: string } };
+  const event = JSON.parse(raw) as { id: string; event_type: string; resource?: { dispute_id?: string; id?: string; status?: string } };
   const disputeId = event.resource?.dispute_id ?? event.resource?.id ?? null;
   const conn = db();
   const seen = conn.prepare('SELECT processed_at FROM paypal_events WHERE id = ?').get(event.id) as { processed_at: string | null } | undefined;
@@ -174,6 +175,20 @@ export async function handleSandboxWebhook(raw: string, headers: { get(name: str
   }
 
   const markProcessed = () => conn.prepare('UPDATE paypal_events SET processed_at = ? WHERE id = ?').run(nowIso(), event.id);
+  if (event.event_type === REFUND_EVENT) {
+    const refundId = event.resource?.id;
+    if (refundId) {
+      try {
+        const status = event.resource?.status;
+        if (status && status !== 'PENDING') applyRefundOutcome(refundId, status);
+        else await refreshRefund(refundId);
+      } catch {
+        return { status: 503, body: { error: '暂时无法确认退款结果' } };
+      }
+    }
+    markProcessed();
+    return { status: 200, body: { received: true } };
+  }
   if (!DISPUTE_EVENTS.has(event.event_type) || !disputeId) {
     markProcessed();
     return { status: 200, body: { ignored: true } };
@@ -264,6 +279,7 @@ async function runSync(): Promise<SyncState> {
     }
     if (complete) state.cursor = new Date(startedAt).toISOString();
     else state.error = `争议超过 ${MAX_PAGES} 页，本轮没有处理完，下一轮继续。`;
+    await settleProcessingRefunds();
   } catch (e) {
     // 游标不前进，下一轮会重新处理这段时间内的争议。
     state.ok = false;
@@ -276,6 +292,73 @@ async function runSync(): Promise<SyncState> {
 const g = globalThis as unknown as { __verdictSyncRun?: Promise<SyncState> };
 
 /** 手动点同步和定时同步撞在一起时，共用同一轮。 */
+interface ProcessingRefund {
+  id: string;
+  claim_id: string;
+  type: string;
+  paypal_response: string | null;
+}
+
+function processingRefund(refundId: string): ProcessingRefund | undefined {
+  return db()
+    .prepare(
+      `SELECT id, claim_id, type, paypal_response FROM actions
+       WHERE status = 'processing' AND json_extract(paypal_response, '$.refund_id') = ?`,
+    )
+    .get(refundId) as ProcessingRefund | undefined;
+}
+
+/** 把一笔处理中的退款收成最终结果。PENDING 和认不出的状态保持不动。 */
+function applyRefundOutcome(refundId: string, status: string): void {
+  if (!status || status === 'PENDING') return;
+  const action = processingRefund(refundId);
+  if (!action) return;
+  const stored = action.paypal_response ? (JSON.parse(action.paypal_response) as Record<string, unknown>) : {};
+  stored.status = status;
+  if (status === 'COMPLETED') {
+    const after =
+      action.type === 'make_offer'
+        ? { status: 'action_sent', title: '商家提出和解' }
+        : { status: 'closed', title: '商家确认退款' };
+    db().prepare("UPDATE actions SET status = 'succeeded', paypal_response = ? WHERE id = ?").run(JSON.stringify(stored), action.id);
+    db().prepare('UPDATE claims SET status = ? WHERE id = ?').run(after.status, action.claim_id);
+    addTimeline(action.claim_id, 'action', '退款已完成', after.title);
+    return;
+  }
+  if (status === 'FAILED' || status === 'CANCELLED') {
+    db().prepare("UPDATE actions SET status = 'failed', paypal_response = ? WHERE id = ?").run(JSON.stringify(stored), action.id);
+    addTimeline(action.claim_id, 'action', '退款未完成', `PayPal 退款状态为 ${status}，索赔没有结案`);
+  }
+}
+
+async function refreshRefund(refundId: string): Promise<void> {
+  const client = getSandboxClient();
+  if (!client) return;
+  const body = await client.getRefund(refundId);
+  if (body.status) applyRefundOutcome(refundId, body.status);
+}
+
+/** 查询仍在处理中的退款。查询失败时保持处理中，下一轮再确认。 */
+export async function settleProcessingRefunds(): Promise<void> {
+  const client = getSandboxClient();
+  if (!client) return;
+  const rows = db().prepare("SELECT paypal_response FROM actions WHERE status = 'processing'").all() as { paypal_response: string | null }[];
+  for (const row of rows) {
+    let refundId: string | undefined;
+    try {
+      refundId = (JSON.parse(row.paypal_response ?? '{}') as { refund_id?: string }).refund_id;
+    } catch {
+      continue;
+    }
+    if (!refundId) continue;
+    try {
+      await refreshRefund(refundId);
+    } catch {
+      /* 保持处理中 */
+    }
+  }
+}
+
 export function syncSandboxDisputes(): Promise<SyncState> {
   g.__verdictSyncRun ??= runSync().finally(() => {
     g.__verdictSyncRun = undefined;

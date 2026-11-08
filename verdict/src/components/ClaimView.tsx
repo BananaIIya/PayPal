@@ -62,8 +62,8 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
   const deleteBlocked =
     data.claim.disputeId && data.claim.status !== 'closed'
       ? 'PayPal 争议还没结案，结案后才能删除，否则就不能在 Verdict 里回应这笔争议了。'
-      : data.actions.some((a) => a.status === 'pending' || a.status === 'unknown')
-        ? '有结果不明或还在执行的动作，请先在动作记录里对账。'
+      : data.actions.some((a) => a.status === 'pending' || a.status === 'unknown' || a.status === 'processing')
+        ? '有退款处理中、结果不明或还在执行的动作，请先在动作记录里对账。'
         : analyzing
           ? '分析还在进行，请稍后再删除。'
           : null;

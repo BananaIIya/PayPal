@@ -191,10 +191,16 @@ export async function renderScene(scene: Scene): Promise<Buffer> {
 }
 
 /**
- * 在 JPEG 里写入一段 APP11（JUMBF）容器，内容模拟 ChatGPT 生成图的 C2PA 清单。
+ * 在 JPEG 里写入一段 APP11（JUMBF）容器，内容模拟 AI 工具写入的 C2PA 清单。
+ * 默认模拟从零生成（c2pa.created + trainedAlgorithmicMedia）；edited 模拟打开一张照片后用 AI 修改
+ * （c2pa.opened + parentOf + compositeWithTrainedAlgorithmicMedia）。
  * 这不是有效签名的清单，只用来走通 Provenance 分析器的字节级解析。
  */
-export function injectSimulatedC2PA(jpeg: Buffer, generator = 'ChatGPT'): Buffer {
+export function injectSimulatedC2PA(jpeg: Buffer, opts: { generator?: string; edited?: boolean } = {}): Buffer {
+  const generator = opts.generator ?? 'ChatGPT';
+  const actions = opts.edited
+    ? ['c2pa.opened', 'parentOf', 'c2pa.edited', 'digitalSourceType', 'http://cv.iptc.org/newscodes/digitalsourcetype/compositeWithTrainedAlgorithmicMedia']
+    : ['c2pa.created', 'digitalSourceType', 'http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia'];
   const fields = [
     'JP\u0000\u0000\u0000\u0000\u0000\u0001jumb',
     'jumdc2pa',
@@ -202,9 +208,7 @@ export function injectSimulatedC2PA(jpeg: Buffer, generator = 'ChatGPT'): Buffer
     'claim_generator',
     generator,
     'c2pa.actions',
-    'c2pa.created',
-    'digitalSourceType',
-    'http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia',
+    ...actions,
   ];
   const manifest = Buffer.from(fields.join('\u0000'), 'latin1');
   const header = Buffer.alloc(4);

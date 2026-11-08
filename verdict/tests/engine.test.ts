@@ -69,6 +69,7 @@ describe('公式', () => {
       ['live_capture', 1.5],
       ['paypal_dispute', 1.2],
       ['uploaded', 0.9],
+      ['challenge_pending', 0.9],
       ['narrative', 0.45],
     ];
     for (const [source, expected] of weights) {
@@ -91,13 +92,11 @@ describe('验收场景（开发文档“测试与验收场景”）', () => {
   });
 
   it.each([
-    'AI_PROVENANCE_FOUND',
-    'IDENTITY_MISMATCH',
     'IMAGE_FOUND_ONLINE',
     'EVIDENCE_REUSED_ACROSS_CLAIMS',
     'RECORD_NOT_FOUND',
     'SCREENSHOT_CONTENT_MISMATCH',
-    'CROSS_EVIDENCE_CONTRADICTION',
+    'AI_PROVENANCE_FOUND',
   ])('硬规则 %s → 高风险，不被支持信号抵消，且在 Q 低时也不降级', (code) => {
     const hard = sig(code, { strength: 'strong', basisSource: 'uploaded' });
     const offset = sig('Y', { direction: 'supports_claim', strength: 'strong', confidence: 1 });
@@ -106,6 +105,141 @@ describe('验收场景（开发文档“测试与验收场景”）', () => {
     expect(r.level).toBe('high');
     expect(r.findings[0].code).toBe(code);
     expect(r.findings[0].hardRule).toBe(true);
+  });
+
+  it('未核验的来源声明不判高风险，至少中风险，并建议要原图', () => {
+    const one = sig('PROVENANCE_CLAIM_UNVERIFIED', {
+      analyzer: 'provenance',
+      direction: 'contradicts_claim',
+      strength: 'moderate',
+      confidence: 0.7,
+      evidenceIds: ['e1'],
+      basisSource: 'live_capture',
+    });
+    const r = decide(input('damaged', [identityMatch, one], { evidence: [...LIVE_SHOTS, REF] }));
+    expect(r.level).toBe('medium');
+    expect(r.findings.find((f) => f.code === 'PROVENANCE_CLAIM_UNVERIFIED')!.hardRule).toBe(false);
+    expect(r.headline).toContain('来源声明未验证');
+    expect(r.primaryAction.label).toBe('请买家提供原图');
+    expect(r.notices.join()).toContain('不能当作索赔不成立的依据');
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('refund');
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('accept_claim');
+    expect(r.notices.join()).toContain('不会执行');
+
+    const many = Array.from({ length: 8 }, (_, i) => ({ ...one, id: `p${i}` }));
+    expect(decide(input('damaged', many, { evidence: [...LIVE_SHOTS, REF] })).level).not.toBe('high');
+  });
+
+  it('文件声明由 AI 从零生成：相册上传也判高风险，任何渠道都不建议退款', () => {
+    const album: EvidenceRef[] = ['overall', 'damage_closeup', 'package', 'label'].map((shot, i) => ({
+      id: `u${i}`,
+      source: 'uploaded',
+      layer: 'C',
+      shotLabel: shot,
+    }));
+    const generated = sig('AI_PROVENANCE_FOUND', {
+      analyzer: 'provenance',
+      strength: 'strong',
+      confidence: 0.9,
+      evidenceIds: ['u1'],
+      basisSource: 'uploaded',
+    });
+    for (const hasDispute of [true, false]) {
+      const base = input('damaged', [generated], { evidence: [...album, REF] });
+      const r = decide({ ...base, claim: { ...base.claim, hasDispute } });
+      expect(r.level).toBe('high');
+      expect(r.findings.find((f) => f.code === 'AI_PROVENANCE_FOUND')!.hardRule).toBe(true);
+      expect(r.headline).toBe('文件声明由 AI 从零生成');
+      expect(r.notices.join()).toContain('从零生成');
+      expect(r.notices.join()).not.toContain('不能当作索赔不成立的依据');
+      expect(r.propositions.find((p) => p.id === 'damage_exists')!.refutingSignalIds).toContain('AI_PROVENANCE_FOUND');
+      const types = [r.primaryAction, ...r.alternatives].map((a) => a.type);
+      expect(types).not.toContain('refund');
+      expect(types).not.toContain('accept_claim');
+    }
+  });
+
+  it('来源声明只在非关键镜头上时也不判低风险，建议要原图', () => {
+    const r = decide(
+      input('damaged', [
+        { ...identityMatch, evidenceIds: ['e1'] },
+        sig('PROVENANCE_CLAIM_UNVERIFIED', {
+          analyzer: 'provenance',
+          direction: 'contradicts_claim',
+          strength: 'moderate',
+          confidence: 0.7,
+          evidenceIds: ['e0'],
+          basisSource: 'live_capture',
+        }),
+      ]),
+    );
+    expect(r.level).toBe('medium');
+    expect(r.primaryAction.label).toBe('请买家提供原图');
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('accept_claim');
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('refund');
+  });
+
+  it('现场拍摄的序列号明显不符时判高风险，但仍先排查错发', () => {
+    const r = decide(input('damaged', [sig('IDENTITY_MISMATCH', { strength: 'strong', confidence: 0.95 })]));
+    expect(r.dataConfidence).toBeGreaterThanOrEqual(0.5);
+    expect(r.level).toBe('high');
+    expect(r.findings.find((f) => f.code === 'IDENTITY_MISMATCH')!.hardRule).toBe(false);
+    expect(r.headline).toContain('先排查是否错发');
+    expect(r.primaryAction.label).toBe('先排查是否错发');
+    expect(r.primaryAction.type).toBe('none');
+    expect(r.primaryAction.paypalOperation).toBeNull();
+    expect(r.alternatives.map((a) => a.type)).toContain('accept_claim');
+    expect(r.notices.join()).not.toContain('不会执行');
+    expect(r.notices.join()).toContain('错发');
+    expect(r.ruleTrace.join()).toContain('不直接反驳');
+  });
+
+  it('相册上传的序列号不符不升到高风险', () => {
+    const r = decide(input('damaged', [sig('IDENTITY_MISMATCH', { strength: 'strong', confidence: 0.95, basisSource: 'uploaded' })]));
+    expect(r.level).toBe('medium');
+    expect(r.primaryAction.label).toBe('先排查是否错发');
+  });
+
+  it('序列号不符但数据置信度不足时保持中风险', () => {
+    const r = decide(
+      input('damaged', [sig('IDENTITY_MISMATCH', { strength: 'strong', confidence: 0.95 })], {
+        evidence: [{ id: 'e0', source: 'live_capture', layer: 'B', shotLabel: 'serial_closeup' }],
+      }),
+    );
+    expect(r.dataConfidence).toBeLessThan(0.5);
+    expect(r.level).toBe('medium');
+    expect(r.primaryAction.label).toBe('先排查是否错发');
+  });
+
+  it('多份证据互相矛盾不判高风险，支持信号也不能把它降到低风险', () => {
+    const cross = sig('CROSS_EVIDENCE_CONTRADICTION', { strength: 'strong', confidence: 0.88, basisSource: 'uploaded' });
+    const alone = decide(input('damaged', [cross]));
+    expect(alone.score).toBeLessThan(3);
+    expect(alone.level).toBe('medium');
+    expect(alone.findings[0].hardRule).toBe(false);
+    expect(alone.primaryAction.label).toBe('请买家说明');
+
+    const offset = sig('Y', { direction: 'supports_claim', strength: 'strong', confidence: 1 });
+    const lowered = decide(input('damaged', [cross, offset, identityMatch], { evidence: [] }));
+    expect(lowered.score).toBeLessThan(1);
+    expect(lowered.level).toBe('medium');
+  });
+
+  it('强支持可以抵消序列号不符的分数，但判定不低于中风险', () => {
+    const r = decide(
+      input(
+        'damaged',
+        [
+          sig('IDENTITY_MISMATCH', { strength: 'strong', confidence: 0.95, evidenceIds: ['e0'] }),
+          sig('SUPPORT', { id: 'sup', direction: 'supports_claim', strength: 'strong', confidence: 1, evidenceIds: ['e1'] }),
+        ],
+        { hasReference: false, evidence: LIVE_SHOTS },
+      ),
+    );
+    expect(r.score).toBeLessThan(1);
+    expect(r.level).toBe('medium');
+    expect(r.ruleTrace.join()).toContain('履约错误');
+    expect(r.primaryAction.label).toBe('先排查是否错发');
   });
 
   it('无水印 AI 生成 + 相册上传 → 中风险，建议现场补拍', () => {
@@ -153,9 +287,87 @@ describe('验收场景（开发文档“测试与验收场景”）', () => {
         sig('DELIVERY_ADDRESS_MISMATCH', { analyzer: 'logistics', direction: 'supports_claim', strength: 'strong', basisSource: 'carrier_api' }),
       ], { hasReference: false }),
     );
+    expect(r.level).toBe('low');
+    expect(r.primaryAction.type).toBe('accept_claim');
+    expect(r.primaryAction.reason).toContain('邮编');
     expect(r.primaryAction.type).not.toBe('provide_evidence');
     expect(r.alternatives.map((a) => a.type)).not.toContain('provide_evidence');
     expect(r.notices.join()).toContain('物流证据不足');
+  });
+
+  it('单号早于订单时不因此退款；来源声明未验证时也不退', () => {
+    const early = sig('SHIPPED_BEFORE_ORDER', {
+      analyzer: 'logistics',
+      direction: 'supports_claim',
+      strength: 'strong',
+      confidence: 0.95,
+      basisSource: 'carrier_api',
+    });
+    const alone = decide(input('not_received', [early], { hasReference: false }));
+    expect(alone.level).toBe('insufficient');
+    expect([alone.primaryAction, ...alone.alternatives].map((a) => a.type)).not.toContain('refund');
+    expect([alone.primaryAction, ...alone.alternatives].map((a) => a.type)).not.toContain('accept_claim');
+    expect(alone.notices.join()).toContain('物流证据不足');
+
+    const withProvenance = decide(
+      input('not_received', [
+        early,
+        sig('PROVENANCE_CLAIM_UNVERIFIED', {
+          analyzer: 'provenance',
+          direction: 'contradicts_claim',
+          strength: 'moderate',
+          confidence: 0.7,
+          basisSource: 'uploaded',
+        }),
+      ], { hasReference: false }),
+    );
+    expect(withProvenance.level).toBe('medium');
+    expect(withProvenance.primaryAction.type).toBe('send_message');
+    expect([withProvenance.primaryAction, ...withProvenance.alternatives].map((a) => a.type)).not.toContain('accept_claim');
+  });
+
+  it('物流未签收或状态不明时不退款', () => {
+    const transit = decide(
+      input('not_received', [
+        sig('TRACKING_NOT_DELIVERED', {
+          analyzer: 'logistics',
+          direction: 'supports_claim',
+          strength: 'moderate',
+          confidence: 0.9,
+          basisSource: 'carrier_api',
+        }),
+      ], { hasReference: false }),
+    );
+    expect(transit.level).toBe('insufficient');
+    expect([transit.primaryAction, ...transit.alternatives].map((a) => a.type)).not.toContain('refund');
+    expect([transit.primaryAction, ...transit.alternatives].map((a) => a.type)).not.toContain('accept_claim');
+    expect(transit.notices.join()).toContain('不能据此退款');
+
+    const unknown = decide(
+      input('not_received', [
+        sig('TRACKING_STATUS_UNKNOWN', { analyzer: 'logistics', direction: 'neutral', strength: 'weak', confidence: 0.5, basisSource: 'carrier_api' }),
+      ], { hasReference: false }),
+    );
+    expect(unknown.level).toBe('insufficient');
+    expect([unknown.primaryAction, ...unknown.alternatives].map((a) => a.type)).not.toContain('accept_claim');
+  });
+
+  it('少件称重正常且现场照片齐全时才建议部分退款', () => {
+    const shots: EvidenceRef[] = ['package', 'label', 'contents'].map((shot, i) => ({
+      id: `e${i}`,
+      source: 'live_capture',
+      layer: 'B',
+      shotLabel: shot,
+    }));
+    const weight = sig('WEIGHT_MISMATCH', { analyzer: 'logistics', basisSource: 'carrier_api' });
+    const ready = decide(input('missing_items', [weight], { evidence: shots }));
+    expect(ready.level).toBe('medium');
+    expect(ready.primaryAction.type).toBe('make_offer');
+
+    const album = shots.map((e) => ({ ...e, source: 'uploaded' as const, layer: 'C' as const }));
+    const unverified = decide(input('missing_items', [weight], { evidence: album }));
+    expect(unverified.primaryAction.type).not.toBe('make_offer');
+    expect([unverified.primaryAction, ...unverified.alternatives].map((a) => a.type)).not.toContain('refund');
   });
 
   it('同批次真实质量问题 → 低风险 + 质量提示，SKU 聚集不计入 R', () => {
@@ -217,6 +429,10 @@ describe('验收场景（开发文档“测试与验收场景”）', () => {
     );
     expect(r.incomplete).toBe(true);
     expect(r.notRun.map((x) => x.analyzer)).toEqual(['synthetic']);
+    expect(r.level).not.toBe('low');
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('refund');
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('accept_claim');
+    expect(r.notices.join()).toContain('不会执行');
   });
 
   it('Provenance 和 Synthetic 都不可用 → 不判低风险', () => {
@@ -260,6 +476,8 @@ describe('Q 与充分性', () => {
     expect(r.propositions.find((p) => p.id === 'damage_exists')?.status).toBe('insufficient');
     expect(r.lowTierShots).toHaveLength(4);
     expect(r.dataConfidence).toBe(0);
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('refund');
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('make_offer');
   });
 
   it('R 高但 Q 低 → 降为中风险，先补证', () => {
@@ -297,6 +515,25 @@ describe('处置约束与公平性', () => {
     expect(onlyBehavior.level).not.toBe('high');
   });
 
+  it('证据不足但双方已同意退款时，仍然建议退款', () => {
+    const evidence: EvidenceRef[] = ['overall', 'damage_closeup', 'package', 'label'].map((shot, i) => ({
+      id: `e${i}`,
+      source: 'uploaded' as const,
+      layer: 'C' as const,
+      shotLabel: shot,
+    }));
+    const r = decide(
+      input('damaged', [], {
+        evidence,
+        hasReference: false,
+        claim: { type: 'damaged', hasDispute: true, amount: 100, currency: 'USD', alreadyAgreed: true },
+      }),
+    );
+    expect(r.level).toBe('insufficient');
+    expect(r.primaryAction.type).toBe('accept_claim');
+    expect(r.notices.join()).not.toContain('不会执行');
+  });
+
   it('已达成合意 → 不再建议反驳', () => {
     const r = decide(
       input('damaged', [sig('IDENTITY_MISMATCH', { strength: 'strong' })], {
@@ -315,11 +552,12 @@ describe('处置约束与公平性', () => {
     );
     expect(r.level).toBe('high');
     expect(r.primaryAction.type).toBe('send_message');
+    expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('refund');
   });
 
   it('发给买家的草稿不出现指控性措辞', () => {
     const scenarios = [
-      decide(input('damaged', [sig('AI_PROVENANCE_FOUND', { strength: 'strong' })])),
+      decide(input('damaged', [sig('PROVENANCE_CLAIM_UNVERIFIED', { direction: 'neutral', strength: 'moderate', confidence: 0.7, evidenceIds: ['e1'] })])),
       decide(input('damaged', [sig('SYNTHETIC_LIKELY', { analyzer: 'synthetic' })])),
       decide(input('damaged', [sig('NARRATIVE_EVIDENCE_CONFLICT', { analyzer: 'consistency' })])),
       decide(input('damaged', [], { evidence: [], hasReference: false })),

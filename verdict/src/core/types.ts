@@ -23,6 +23,8 @@ export type SourceMark =
   | 'listing_snapshot'
   | 'reference'
   | 'live_capture'
+  /** 请求带了有效挑战，但画面里的挑战码还没核验。层级与相册上传相同。 */
+  | 'challenge_pending'
   | 'paypal_dispute'
   | 'uploaded'
   | 'manual_import'

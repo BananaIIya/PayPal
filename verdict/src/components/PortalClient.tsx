@@ -22,7 +22,7 @@ export function PortalClient({ token }: { token: string }) {
   const [fatal, setFatal] = useState<string | null>(null);
   const [step, setStep] = useState<Step>('order');
   const [claimType, setClaimType] = useState<string | null>(null);
-  const [done, setDone] = useState<Record<string, 'live' | 'album'>>({});
+  const [done, setDone] = useState<Record<string, 'live' | 'album' | 'pending'>>({});
   const [activeShot, setActiveShot] = useState<Shot | null>(null);
   const [narrative, setNarrative] = useState('');
   const [busy, setBusy] = useState(false);
@@ -44,8 +44,11 @@ export function PortalClient({ token }: { token: string }) {
       if (d?.claim.lockedType) setClaimType(d.claim.type);
       // 买家中途刷新或重新打开链接时，已经上传过的镜头直接显示为完成，不用重拍。
       if (d?.uploaded.length) {
-        const restored: Record<string, 'live' | 'album'> = {};
-        for (const u of d.uploaded) if (u.shot) restored[u.shot] = u.source === 'live_capture' ? 'live' : 'album';
+        const restored: Record<string, 'live' | 'album' | 'pending'> = {};
+        for (const u of d.uploaded) {
+          if (!u.shot) continue;
+          restored[u.shot] = u.source === 'live_capture' ? 'live' : u.source === 'challenge_pending' ? 'pending' : 'album';
+        }
         setDone((cur) => ({ ...restored, ...cur }));
       }
     });
@@ -167,7 +170,9 @@ export function PortalClient({ token }: { token: string }) {
                 <span className={`shot-state ${done[s.id] ? 'done' : ''}`}>{done[s.id] ? '✓' : ''}</span>
                 <div style={{ flex: 1 }}>
                   <strong>{s.label}</strong>
-                  <div className="muted small">{done[s.id] === 'album' ? '已从相册上传' : done[s.id] === 'live' ? '已现场拍摄' : s.hint}</div>
+                  <div className="muted small">
+                    {done[s.id] === 'album' ? '已从相册上传' : done[s.id] === 'live' ? '挑战码已核对' : done[s.id] === 'pending' ? '已拍摄，待核验' : s.hint}
+                  </div>
                 </div>
                 <button className="btn" onClick={() => setActiveShot(s)}>
                   {done[s.id] ? '重拍' : '开始'}
@@ -306,7 +311,7 @@ function CameraCapture({
   token: string;
   shot: Shot;
   onClose: () => void;
-  onDone: (mode: 'live' | 'album') => void;
+  onDone: (mode: 'live' | 'album' | 'pending') => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -470,7 +475,7 @@ function CameraCapture({
       return;
     }
     stopStream();
-    onDone(withChallenge ? 'live' : 'album');
+    onDone(withChallenge ? 'pending' : 'album');
   }
 
   return (

@@ -1,8 +1,8 @@
 import { FOLLOW_UP_TYPES, followUpDraft, neutralActions, returnOfferDraft } from '@/core/recommend';
 import type { SuggestedAction } from '@/core/types';
-import { paypalState } from './actions';
+import { identityRefundAllowed, paypalState, payoutBlockedByVerdict } from './actions';
 import { selectAttachmentEvidence } from './attachments';
-import { claimDetail, formatReturnAddress, getClaim, getOrder, getPolicy, merchantReturnAddress, shadowModeOn } from './repo';
+import { claimDetail, formatReturnAddress, getClaim, getOrder, getPolicy, merchantAgreedRefund, merchantReturnAddress, shadowModeOn } from './repo';
 import { findReportFont } from './report-pdf';
 import { captureState } from './sandbox-shop';
 
@@ -39,7 +39,7 @@ export async function claimView(id: string) {
       ]
     : [];
   /** 动作面板的选项：第一项是判定建议；已结案时只剩 PayPal 仍然开放的后续操作。影子模式下换成中性选项。 */
-  const actionOptions: SuggestedAction[] = !report
+  const rawOptions: SuggestedAction[] = !report
     ? []
     : shadow
       ? neutralActions({
@@ -55,6 +55,22 @@ export async function claimView(id: string) {
       : closed
         ? followUps
         : [report.primaryAction, ...report.alternatives, ...followUps];
+  // 面板上不留会被执行器拒绝的退款按钮。建议本身就是退款或和解，以及错发排查时的退款，才保留。
+  // 影子模式仍用中性文案，但同样拿掉不能执行的资金按钮。
+  const actionOptions = report
+    ? rawOptions.filter(
+        (a) =>
+          !payoutBlockedByVerdict(
+            {
+              level: report.level,
+              suggestedAction: report.primaryAction.type,
+              identityRefund: identityRefundAllowed(report.findings),
+              alreadyAgreed: merchantAgreedRefund(order.id),
+            },
+            a,
+          ),
+      )
+    : rawOptions;
   const base = {
     ...detail,
     allowedActions: state.allowed,
