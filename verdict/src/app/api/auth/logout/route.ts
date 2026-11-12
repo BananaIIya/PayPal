@@ -7,7 +7,7 @@ import { isCrossSite } from '@/server/origin';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
-  if (isCrossSite(req)) return NextResponse.json({ error: '拒绝跨站请求' }, { status: 403 });
+  if (isCrossSite(req)) return NextResponse.json({ error: 'Cross-site request rejected' }, { status: 403 });
   destroySession(req.cookies.get(SESSION_COOKIE)?.value);
   return clearSessionCookie(NextResponse.json({ ok: true }));
 }

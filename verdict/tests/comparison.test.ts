@@ -111,9 +111,9 @@ describe('商品快照比对', () => {
     expect(out.status).toBe('done');
     if (out.status !== 'done') return;
     const diff = out.signals.find((s) => s.code === 'SNAPSHOT_DIFFERENCE')!;
-    expect(diff.explanation).toContain('颜色');
+    expect(diff.explanation).toContain('Color');
     expect(diff.explanation).toContain('藏青色');
-    expect(diff.explanation).not.toContain('型号');
+    expect(diff.explanation).not.toContain('Model');
     expect(out.signals.map((s) => s.code)).not.toContain('SNAPSHOT_UNVERIFIED');
   });
 });
@@ -144,7 +144,7 @@ describe('物流地址比对', () => {
     if (out.status !== 'done') return;
     const hit = out.signals.find((s) => s.code === 'DELIVERED_CONFIRMED')!;
     expect(hit.explanation).toContain('94107');
-    expect(hit.explanation).not.toContain('未知');
+    expect(hit.explanation).not.toMatch(/unknown/i);
   });
 
   it('缺少签收邮编时保持无法核对', async () => {

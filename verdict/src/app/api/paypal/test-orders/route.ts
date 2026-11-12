@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   await ready();
-  const auth = authorize(req, { write: true, owner: true, ownerReason: '只有店主可以创建沙箱测试订单' });
+  const auth = authorize(req, { write: true, owner: true, ownerReason: 'Only the owner can create sandbox test orders' });
   if (auth instanceof NextResponse) return auth;
   const body = await req.json().catch(() => null);
   try {

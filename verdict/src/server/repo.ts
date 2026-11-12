@@ -187,15 +187,48 @@ export function getTracking(order: OrderRow): TrackingResult | null {
 
 const NEGATION_BEFORE = /(?:无法|不能|不要|不会|不予|没有|暂不|拒绝|不同意|不|未|别|拒|没|非)$/;
 
-/** 商家这句话是不是在答应退款。否定句（不同意、无法退款、尚未退款）不算。 */
+/** 问句：是在征求意见或核对情况，不是答应。 */
+const QUESTION = /[？?]\s*$|吗|是否|能否|可否|可不可以|要不要|有没有|行不行|好不好/;
+/** 有前提的答应（先退货、验货后、只同意部分退款）不是无条件退款。 */
+const CONDITIONAL = /如果|若|假如|只要|才能|才会|才可以|请先|需要先|须先|寄回|退货|验货|部分|后(?:才|再|就|即可)?(?:同意|退款|为您退款)/;
+
+/**
+ * 商家这句话是不是在无条件答应退款。否定句（不同意、无法退款、尚未退款）、问句、
+ * 带前提的说法（先寄回、验货后、部分退款）都不算。拿不准时一律不算：
+ * 算成“已同意”会跳过风险判定，算漏只是照常走核验。
+ */
 export function textAgreesToRefund(text: string): boolean {
-  const agree = /同意[^，,。！!？?\n]{0,6}退款|已为您退款|(?<![未不])已退款/g;
-  for (const match of text.matchAll(agree)) {
-    const start = match.index ?? 0;
-    const before = text.slice(Math.max(0, start - 8), start);
-    if (NEGATION_BEFORE.test(before)) continue;
-    if (match[0] === '已退款' && /已退款.{0,8}(?:不|未|没|别|拒|无法|不能)/.test(text.slice(start, start + match[0].length + 8))) continue;
-    return true;
+  const agree = /同意[^，,。！!？?\n]{0,6}退款|已为您(?:全额)?退款|(?<![未不])已退款/g;
+  const sentences = text.match(/[^。！!？?\n；;]+[。！!？?；;]?/g) ?? [];
+  for (const sentence of sentences) {
+    if (QUESTION.test(sentence) || CONDITIONAL.test(sentence)) continue;
+    for (const match of sentence.matchAll(agree)) {
+      const start = match.index ?? 0;
+      const before = sentence.slice(Math.max(0, start - 8), start);
+      if (NEGATION_BEFORE.test(before)) continue;
+      if (match[0] === '已退款' && /已退款.{0,8}(?:不|未|没|别|拒|无法|不能)/.test(sentence.slice(start, start + match[0].length + 8))) continue;
+      return true;
+    }
+  }
+  return englishAgreesToRefund(text);
+}
+
+// 英文消息的同一套判断：否定、问句、带前提的说法都不算，拿不准时不算。
+const EN_AGREE = /\b(?:agree[ds]?|approved?)\b[^.,;:!?\n]{0,24}\brefund|\brefund\b[^.,;:!?\n]{0,16}\b(?:approved|issued|processed|sent)\b|\b(?:have|has|'ve)\s+(?:been\s+)?refunded\b|\b(?:issued|processed|sent)\s+(?:you\s+)?(?:a\s+|your\s+|the\s+)?(?:full\s+)?refund\b|\bwe\s+(?:will|'ll)\s+refund\b/gi;
+const EN_NEGATION = /\b(?:not|no|never|cannot|can't|won't|don't|didn't|isn't|wasn't|haven't|hasn't|unable|refuse[ds]?|decline[ds]?|reject(?:ed|s)?)\b|n't\b/i;
+const EN_QUESTION = /\?\s*$|^\s*(?:can|could|would|will|shall|should|do|does|did|is|are|may|have|has)\b|\bwhether\b/i;
+const EN_CONDITIONAL = /\b(?:if|once|after|unless|provided|only|partial(?:ly)?|return(?:ed|ing)?|send\s+(?:it\s+)?back|ship\s+(?:it\s+)?back|inspect(?:ion|ed)?|first)\b/i;
+
+function englishAgreesToRefund(text: string): boolean {
+  const sentences = text.match(/[^.!?\n;]+[.!?;]?/g) ?? [];
+  for (const sentence of sentences) {
+    if (EN_QUESTION.test(sentence) || EN_CONDITIONAL.test(sentence)) continue;
+    for (const match of sentence.matchAll(EN_AGREE)) {
+      const start = match.index ?? 0;
+      const before = sentence.slice(Math.max(0, start - 30), start);
+      if (EN_NEGATION.test(before) || EN_NEGATION.test(match[0])) continue;
+      return true;
+    }
   }
   return false;
 }

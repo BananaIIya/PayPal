@@ -175,7 +175,7 @@ function unframedVideoReason(analyzer: AnalyzerName, ctx: AnalyzerContext): stri
   if (!FRAME_ANALYZERS.has(analyzer)) return null;
   const unframed = ctx.evidence.find((e) => e.kind === 'video' && videoMeta(e.capture_meta)?.frameExtraction !== 'ok');
   if (!unframed) return null;
-  return `视频没有抽帧（${videoMeta(unframed.capture_meta)?.reason ?? '原因未知'}），这个分析器没有看到视频画面；处理好后重新分析`;
+  return `No frames were extracted from the video (${videoMeta(unframed.capture_meta)?.reason ?? 'unknown reason'}), so this analyzer did not see the video. Re-analyze once that is fixed.`;
 }
 
 function buildContext(claim: ClaimRow, order: OrderRow, offline: boolean): AnalyzerContext {
@@ -285,7 +285,7 @@ function setRun(claimId: string, analyzer: AnalyzerName, status: string, fields:
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`超过 ${Math.round(ms / 1000)} 秒未完成`)), ms);
+    timer = setTimeout(() => reject(new Error(`Did not finish within ${Math.round(ms / 1000)} s`)), ms);
   });
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
@@ -302,13 +302,13 @@ export function hasPurgedEvidence(claimId: string): boolean {
 export async function runAnalysis(claimId: string, opts: RunOptions = {}): Promise<void> {
   if (running.has(claimId)) return;
   if (hasPurgedEvidence(claimId)) {
-    addTimeline(claimId, 'analysis', '跳过重新分析', '证据原件已按保留期删除，保留原来的信号和判定');
+    addTimeline(claimId, 'analysis', 'Re-analysis skipped', 'Original evidence was deleted per the retention period; the previous signals and verdict are kept');
     return;
   }
   running.add(claimId);
   try {
     const claim = getClaim(claimId);
-    if (!claim) throw new Error(`索赔不存在：${claimId}`);
+    if (!claim) throw new Error(`Claim not found: ${claimId}`);
     const order = getOrder(claim.order_id)!;
     const evidence = claimEvidence(claimId);
     const hasScreenshots = evidence.some((e) => ['chat_screenshot', 'receipt'].includes(e.shot_label ?? ''));
@@ -392,7 +392,7 @@ export async function runAnalysis(claimId: string, opts: RunOptions = {}): Promi
       db().prepare("UPDATE claims SET status = 'awaiting_decision' WHERE id = ?").run(claimId);
     }
     const v = latestVerdict(claimId);
-    if (v && !opts.offline) addTimeline(claimId, 'analysis', '核验完成');
+    if (v && !opts.offline) addTimeline(claimId, 'analysis', 'Verification complete');
   } finally {
     running.delete(claimId);
   }
@@ -402,6 +402,6 @@ export async function runAnalysis(claimId: string, opts: RunOptions = {}): Promi
 export function startAnalysis(claimId: string, opts: RunOptions = {}): void {
   const latency = opts.latencyMs ?? Number(process.env.DEMO_ANALYZER_DELAY_MS ?? 350);
   void runAnalysis(claimId, { ...opts, latencyMs: latency }).catch((e) => {
-    console.error(`[verdict] 分析失败 ${claimId}`, e);
+    console.error(`[verdict] Analysis failed ${claimId}`, e);
   });
 }

@@ -15,9 +15,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (auth instanceof NextResponse) return auth;
   const { id } = await params;
   const order = getOrder(id);
-  if (!order) return NextResponse.json({ error: '订单不存在' }, { status: 404 });
+  if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 });
   const claimId = createClaim({ merchantId: order.merchant_id, orderId: id, origin: 'portal', type: 'damaged', status: 'collecting' });
-  addTimeline(claimId, 'claim', '商家生成索赔页链接');
+  addTimeline(claimId, 'claim', 'Merchant created claim link');
   const token = issuePortalToken({ merchantId: order.merchant_id, orderId: id, claimId });
   return NextResponse.json({ claimId, token, url: `${requestOrigin(req)}/c/${token}` });
 }

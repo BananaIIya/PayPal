@@ -21,7 +21,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ toke
   if (check instanceof NextResponse) return check;
   const claim = getClaim(check.payload.claimId);
   const order = claim && getOrder(claim.order_id);
-  if (!claim || !order) return NextResponse.json({ error: '链接无效' }, { status: 401 });
+  if (!claim || !order) return NextResponse.json({ error: 'Invalid link' }, { status: 401 });
 
   const policy = getPolicy(claim.merchant_id, order.category);
   const items = json<{ title: string; quantity: number }[]>(order.items, []);
@@ -49,7 +49,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ toke
       label: CLAIM_TYPE_LABEL[type],
       shots: requiredShots(type, policy).map((id) => ({ id, label: SHOT_LABEL[id] ?? id, hint: SHOT_HINT[id] ?? '' })),
     })),
-    processors: order.paypal_env === 'sandbox' ? [...dataProcessors(), 'PayPal（商家提交争议证据时）'] : dataProcessors(),
+    processors: order.paypal_env === 'sandbox' ? [...dataProcessors(), 'PayPal (when the merchant submits dispute evidence)'] : dataProcessors(),
     // 视频抽出的帧是系统生成的，不算买家上传的内容。
     uploaded: claimEvidence(claim.id)
       .filter((e) => e.kind !== 'frame')

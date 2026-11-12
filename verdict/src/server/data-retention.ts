@@ -71,7 +71,7 @@ export function purgeIfDue(): void {
     try {
       purgeExpiredEvidence(m.id);
     } catch (e) {
-      console.error('[verdict] 按保留期删除证据失败', e instanceof Error ? e.message : e);
+      console.error('[verdict] Failed to delete evidence past the retention period', e instanceof Error ? e.message : e);
     }
   }
 }
@@ -104,13 +104,13 @@ export type DeleteResult = { ok: true; record: DeletionRecord; files: number } |
  */
 export function deleteClaimData(claimId: string, deletedBy: string): DeleteResult {
   const claim = getClaim(claimId);
-  if (!claim) return { ok: false, status: 404, error: '索赔不存在' };
+  if (!claim) return { ok: false, status: 404, error: 'Claim not found' };
   if (claim.paypal_dispute_id && claim.status !== 'closed') {
-    return { ok: false, status: 409, error: 'PayPal 争议还没结案。删除后就不能在 Verdict 里回应这笔争议了，请结案后再删除。' };
+    return { ok: false, status: 409, error: 'The PayPal dispute is not closed yet. After deleting, you can no longer respond to this dispute in Verdict. Delete it after the dispute closes.' };
   }
   const inFlight = db().prepare("SELECT 1 FROM actions WHERE claim_id = ? AND status IN ('pending', 'unknown') LIMIT 1").get(claimId);
-  if (inFlight) return { ok: false, status: 409, error: '有结果不明或还在执行的动作，请先在动作记录里对账，再删除。' };
-  if (isAnalysisRunning(claimId)) return { ok: false, status: 409, error: '分析还在进行，请稍后再删除。' };
+  if (inFlight) return { ok: false, status: 409, error: 'There is an action with an unknown result or still running. Reconcile it in the action history before deleting.' };
+  if (isAnalysisRunning(claimId)) return { ok: false, status: 409, error: 'Analysis is still running. Try deleting again later.' };
 
   const order = getOrder(claim.order_id);
   const conn = db();

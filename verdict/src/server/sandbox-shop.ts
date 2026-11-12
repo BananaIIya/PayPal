@@ -20,14 +20,14 @@ export interface TestProduct {
 }
 
 export const TEST_PRODUCTS: TestProduct[] = [
-  { key: 'mug', sku: 'SB-MUG', title: '手工青瓷马克杯', material: '陶瓷', color: '青瓷绿', model: '青瓷马克杯 350ml', weightG: 420, category: 'ceramics', amount: 39 },
-  { key: 'buds', sku: 'SB-BUDS', title: 'AirBuds Pro 无线耳机', material: '塑料与电子元件', color: '白色', model: 'AirBuds Pro 2', weightG: 90, category: 'electronics', amount: 129 },
-  { key: 'jacket', sku: 'SB-JACKET', title: '羊毛短外套', material: '羊毛', color: '藏青色', model: '短款 M 码', weightG: 900, category: 'apparel', amount: 189 },
+  { key: 'mug', sku: 'SB-MUG', title: 'Handmade celadon mug', material: 'Ceramic', color: 'Celadon green', model: 'Celadon mug 350ml', weightG: 420, category: 'ceramics', amount: 39 },
+  { key: 'buds', sku: 'SB-BUDS', title: 'AirBuds Pro wireless earbuds', material: 'Plastic and electronics', color: 'White', model: 'AirBuds Pro 2', weightG: 90, category: 'electronics', amount: 129 },
+  { key: 'jacket', sku: 'SB-JACKET', title: 'Short wool jacket', material: 'Wool', color: 'Navy', model: 'Short, size M', weightG: 900, category: 'apparel', amount: 189 },
 ];
 
 export async function createTestOrder(productKey: string, origin: string): Promise<{ orderId: string; approveUrl: string }> {
   const product = TEST_PRODUCTS.find((p) => p.key === productKey);
-  if (!product) throw new Error('未知的测试商品');
+  if (!product) throw new Error('Unknown test product');
   const client = requireSandbox();
   const merchant = db().prepare('SELECT id FROM merchants ORDER BY rowid LIMIT 1').get() as { id: string };
   const id = newId();
@@ -42,7 +42,7 @@ export async function createTestOrder(productKey: string, origin: string): Promi
     returnUrl: `${origin}/api/paypal/return`,
     cancelUrl: `${origin}/api/paypal/cancel`,
   });
-  const snapshot = { title: product.title, description: `${product.title}，${product.color}，下单时描述。`, color: product.color, model: product.model };
+  const snapshot = { title: product.title, description: `${product.title}, ${product.color}. Description at time of order.`, color: product.color, model: product.model };
   db()
     .prepare(
       `INSERT INTO orders (id, merchant_id, order_no, paypal_order_id, items, listing_snapshot, current_listing, category, amount, currency, paypal_env, created_at)
@@ -70,7 +70,7 @@ function findByPayPalOrder(token: string): OrderRow | undefined {
 /** 买家付款后回到这里。捕获请求带固定的请求 ID，重复访问不会重复扣款。 */
 export async function completeTestOrder(token: string): Promise<{ orderId: string }> {
   const order = findByPayPalOrder(token);
-  if (!order) throw new Error('找不到这笔测试订单，可能已经被重置');
+  if (!order) throw new Error('Test order not found. It may have been reset');
   if (order.capture_id) return { orderId: order.id };
 
   const captured = await requireSandbox().captureOrder(token, `capture-${order.id}`);
@@ -83,8 +83,8 @@ export async function completeTestOrder(token: string): Promise<{ orderId: strin
   const tracking: TrackingResult = {
     status: 'delivered',
     events: [
-      { at: new Date(paidAt).toISOString(), description: '揽收（模拟）' },
-      { at: new Date(paidAt + 1000).toISOString(), description: '已签收（模拟）' },
+      { at: new Date(paidAt).toISOString(), description: 'Picked up (simulated)' },
+      { at: new Date(paidAt + 1000).toISOString(), description: 'Delivered (simulated)' },
     ],
     deliveredAt: new Date(paidAt + 1000).toISOString(),
     deliveredPostalCode: postalCode,
@@ -110,18 +110,18 @@ export async function completeTestOrder(token: string): Promise<{ orderId: strin
 }
 
 const CAPTURE_LABEL: Record<string, string> = {
-  COMPLETED: '已完成',
-  PENDING: '待处理',
-  REFUNDED: '已全额退款',
-  PARTIALLY_REFUNDED: '已部分退款',
-  DECLINED: '被拒绝',
-  FAILED: '失败',
+  COMPLETED: 'Completed',
+  PENDING: 'Pending',
+  REFUNDED: 'Fully refunded',
+  PARTIALLY_REFUNDED: 'Partially refunded',
+  DECLINED: 'Declined',
+  FAILED: 'Failed',
 };
 
 const PROTECTION_LABEL: Record<string, string> = {
-  ELIGIBLE: '有卖家保护',
-  PARTIALLY_ELIGIBLE: '有部分卖家保护',
-  NOT_ELIGIBLE: '没有卖家保护',
+  ELIGIBLE: 'Seller protection',
+  PARTIALLY_ELIGIBLE: 'Partial seller protection',
+  NOT_ELIGIBLE: 'No seller protection',
 };
 
 export interface CaptureStateView {
@@ -142,13 +142,13 @@ export function describeCapture(state: PayPalCaptureState): Pick<CaptureStateVie
     return {
       summary,
       warning:
-        '买家用银行账户付款（eCheck），款项还没到账，也没有卖家保护。这种付款不能部分退款，买家发起争议时的选项也会少很多。要测试完整流程，请重新下单，并在 PayPal 付款页选 Visa。',
+        'The buyer paid from a bank account (eCheck). The funds have not cleared and there is no seller protection. This payment cannot be partially refunded, and the buyer has far fewer options when opening a dispute. To test the full flow, place a new order and choose Visa on the PayPal payment page.',
     };
   }
   if (state.reason === 'BUYER_COMPLAINT') {
-    return { summary, warning: '买家发起了争议，PayPal 暂扣了这笔款，争议结束后状态才会变。' };
+    return { summary, warning: 'The buyer opened a dispute and PayPal is holding these funds. The status changes only after the dispute ends.' };
   }
-  return { summary, warning: `PayPal 还没有完成这笔付款（原因：${state.reason ?? '未说明'}），退款等操作可能会被拒绝。` };
+  return { summary, warning: `PayPal has not completed this payment (reason: ${state.reason ?? 'not given'}). Refunds and other actions may be declined.` };
 }
 
 /** 只有已付款的沙箱订单才有状态可读。读不到时不影响页面其他内容。 */
@@ -157,7 +157,7 @@ export async function captureState(order: OrderRow): Promise<CaptureStateView | 
   try {
     return { ...describeCapture(await requireSandbox().getCapture(order.capture_id)), error: null };
   } catch (e) {
-    return { summary: '暂时读取不到', warning: null, error: e instanceof Error ? e.message : String(e) };
+    return { summary: 'Unavailable right now', warning: null, error: e instanceof Error ? e.message : String(e) };
   }
 }
 

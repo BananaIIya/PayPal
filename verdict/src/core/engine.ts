@@ -49,6 +49,20 @@ function capStrength(s: Signal): Signal {
   return s;
 }
 
+/** 指向证据本身可能是伪造或翻拍的反证。出现任何一条，序列号不符都不能用来放行退款。 */
+const FABRICATION_CODES = new Set([
+  'SYNTHETIC_LIKELY',
+  'SCREEN_RECAPTURE',
+  'PROVENANCE_CLAIM_UNVERIFIED',
+  'CHALLENGE_MISMATCH',
+  'CHALLENGE_MISSING',
+  'PHYSICALLY_IMPLAUSIBLE',
+  'CROSS_EVIDENCE_CONTRADICTION',
+  'NARRATIVE_EVIDENCE_CONFLICT',
+  'VIDEO_EDITED',
+  'VIDEO_DISCONTINUITY',
+]);
+
 /** 带有 AI 来源声明的文件（修图或从零生成），不能再当作 A、B 层覆盖。 */
 function taintedEvidenceIds(signals: Signal[]): Set<string> {
   return new Set(
@@ -86,13 +100,13 @@ function evaluatePropositions(input: EngineInput, signals: Signal[]): Propositio
 
     if (def.policyField === 'returnable') {
       layers.add('A');
-      return policy.returnable ? done('holds') : done('refuted', '类目策略：该类商品不要求退货');
+      return policy.returnable ? done('holds') : done('refuted', 'Category policy: returns not required for this category');
     }
     const strongRefutes = refuting.filter((s) => strongLayers.has(SOURCE_LAYER[s.basisSource]));
     if (strongRefutes.length) {
       // 序列号不符也可能是仓库错发，不能把它当成“索赔事实已被否定”。
       if (strongRefutes.every((s) => s.code === 'IDENTITY_MISMATCH')) {
-        return done('insufficient', '序列号与留底不一致，但也可能是仓库错发，不能据此否定索赔');
+        return done('insufficient', 'Serial number does not match the shipment reference, but the warehouse may have shipped the wrong unit; this cannot refute the claim');
       }
       return done('refuted');
     }
@@ -124,7 +138,7 @@ function evaluatePropositions(input: EngineInput, signals: Signal[]): Propositio
       const strongBasis = evidence.some((e) => countsAsStrong(e));
       if (ran && strongBasis && refuting.length === 0) return done('holds');
     }
-    if (holding.length || refuting.length) return done('insufficient', '只有 C、D 层证据，不足以确认');
+    if (holding.length || refuting.length) return done('insufficient', 'Only tier C and D evidence; not enough to confirm');
     return done('insufficient');
   });
 }
@@ -167,7 +181,7 @@ export function decide(input: EngineInput): VerdictReport {
   let signals = input.signals.map(capStrength);
   if (merchantRiskHigh && signals.some((s) => s.code === 'SKU_CLAIM_CLUSTER')) {
     signals = signals.filter((s) => s.code !== 'SKU_CLAIM_CLUSTER');
-    trace.push(`M=${M.toFixed(2)} 偏高：SKU_CLAIM_CLUSTER 不计入 R`);
+    trace.push(`M=${M.toFixed(2)} is high: SKU_CLAIM_CLUSTER excluded from R`);
   }
 
   // 加权评分。Behavior 单独不能把判定推到高风险。
@@ -176,12 +190,12 @@ export function decide(input: EngineInput): VerdictReport {
   let R = behaviorR + otherR;
   if (otherR < cfg.riskMedium && R >= cfg.riskHigh) {
     R = cfg.riskHigh - 0.01;
-    trace.push('Behavior 信号单独不足以判高风险，R 限制在高风险阈值以下');
+    trace.push('Behavior signals alone cannot make it high risk; R capped below the high-risk threshold');
   }
   const provenanceR = sum(signals.filter((s) => s.code === 'PROVENANCE_CLAIM_UNVERIFIED').map((s) => signalContribution(s, cfg)));
   if (provenanceR > 0 && R - provenanceR < cfg.riskHigh && R >= cfg.riskHigh) {
     R = cfg.riskHigh - 0.01;
-    trace.push('未核验的来源声明单独不足以判高风险，R 限制在高风险阈值以下');
+    trace.push('An unverified provenance claim alone cannot make it high risk; R capped below the high-risk threshold');
   }
   R = round(R);
 
@@ -210,7 +224,7 @@ export function decide(input: EngineInput): VerdictReport {
       analyzer: r.analyzer,
       status: r.status,
       reason:
-        r.error ?? r.note ?? (r.status === 'queued' || r.status === 'running' ? '仍在运行' : '未执行'),
+        r.error ?? r.note ?? (r.status === 'queued' || r.status === 'running' ? 'Still running' : 'Not run'),
     }));
   const incomplete = notRun.length > 0;
   const keyAnalyzerDown = keyAnalyzerGroups(claim.type).some((group) =>
@@ -230,37 +244,37 @@ export function decide(input: EngineInput): VerdictReport {
   let level: VerdictLevel;
   if (hardHits.length) {
     level = 'high';
-    trace.push(`硬规则命中 ${hardHits.map((s) => s.code).join('、')} → 高风险，不被其他信号抵消`);
+    trace.push(`Hard rule hit: ${hardHits.map((s) => s.code).join(', ')} → High risk, not offset by other signals`);
   } else if (R >= cfg.riskHigh) {
     if (Q >= cfg.minDataConfidence) {
       level = 'high';
-      trace.push(`R=${R} ≥ ${cfg.riskHigh} 且 Q=${Q} 充足 → 高风险`);
+      trace.push(`R=${R} ≥ ${cfg.riskHigh} and Q=${Q} sufficient → High risk`);
     } else {
       level = 'medium';
-      trace.push(`R=${R} ≥ ${cfg.riskHigh} 但 Q=${Q} 偏低 → 降为中风险，先补证再重判`);
+      trace.push(`R=${R} ≥ ${cfg.riskHigh} but Q=${Q} is low → lowered to Medium risk; collect more evidence, then re-run`);
     }
   } else if (R >= cfg.riskMedium) {
     level = 'medium';
-    trace.push(`${cfg.riskMedium} ≤ R=${R} < ${cfg.riskHigh} → 中风险`);
+    trace.push(`${cfg.riskMedium} ≤ R=${R} < ${cfg.riskHigh} → Medium risk`);
   } else if (floorHits.length) {
     level = 'medium';
-    trace.push(`R=${R} 偏低，但出现 ${floorHits.map((s) => s.code).join('、')} → 中风险下限`);
+    trace.push(`R=${R} is low, but ${floorHits.map((s) => s.code).join(', ')} present → Medium risk floor`);
   } else if (keyInsufficient.length) {
     level = 'insufficient';
-    trace.push(`关键命题证据不足：${keyInsufficient.map((p) => p.label).join('；')}`);
+    trace.push(`Insufficient evidence for key checks: ${keyInsufficient.map((p) => p.label).join('; ')}`);
   } else if (keyAnalyzerDown) {
     level = 'medium';
-    trace.push('关键分析器不可用：核验不完整，不判低风险');
+    trace.push('Key analyzer unavailable: verification incomplete, not judged low risk');
   } else if (Q < cfg.minDataConfidence) {
     level = 'medium';
-    trace.push(`R=${R} 偏低但 Q=${Q} 不足：不判低风险`);
+    trace.push(`R=${R} is low but Q=${Q} is insufficient: not judged low risk`);
   } else {
     level = 'low';
-    trace.push(`R=${R} < ${cfg.riskMedium}，Q=${Q} 充足，无强矛盾 → 低风险`);
+    trace.push(`R=${R} < ${cfg.riskMedium}, Q=${Q} sufficient, no strong contradiction → Low risk`);
   }
   if (level === 'low' && signals.some((s) => s.code === 'IDENTITY_MISMATCH' && s.direction === 'contradicts_claim')) {
     level = 'medium';
-    trace.push('序列号与留底不符，也可能是商家履约错误，不降到低风险');
+    trace.push('Serial number does not match the shipment reference; this may be a merchant fulfillment error, so not lowered to low risk');
   }
   // 留底对得上的序列号是可核实的反证，现场或系统记录里读清楚了就应算高风险。
   // 不放进硬规则：相册上传仍按分数停留在中风险；强支持把 R 压到阈值以下时也只保留中风险下限。
@@ -275,9 +289,9 @@ export function decide(input: EngineInput): VerdictReport {
   );
   if (clearIdentity && level === 'medium' && R >= cfg.riskMedium && Q >= cfg.minDataConfidence) {
     level = 'high';
-    trace.push('现场或系统记录中的序列号与留底明显不符，数据置信度足够 → 高风险；仍先排查是否错发，不直接反驳');
+    trace.push('Serial number in live capture or system records clearly does not match the shipment reference, and confidence is sufficient → High risk; still check for a wrong shipment first, do not contest directly');
   }
-  if (incomplete) trace.push(`核验不完整：${notRun.map((r) => r.analyzer).join('、')} 未完成`);
+  if (incomplete) trace.push(`Verification incomplete: ${notRun.map((r) => r.analyzer).join(', ')} not finished`);
 
   const findings = buildFindings(signals, input);
   const topSignalIds = [...signals]
@@ -290,25 +304,42 @@ export function decide(input: EngineInput): VerdictReport {
   const has = (code: string) => signals.some((s) => s.code === code);
 
   const notices: string[] = [];
-  if (policy.safetySensitive) notices.push('该类目涉及食品或人身安全：请先按安全事件处理，不要因风险分延误。');
-  if (qualityNotice) notices.push(`疑似商品质量或履约问题（M=${M.toFixed(2)}）：建议优先排查商品与发货环节。`);
+  if (policy.safetySensitive) notices.push('This category involves food or personal safety: handle it as a safety incident first, and do not let the risk score delay you.');
+  if (qualityNotice) notices.push(`Possible quality or fulfillment issue (M=${M.toFixed(2)}): check the product and shipping process first.`);
   if (has('DELIVERY_ADDRESS_MISMATCH') || has('SHIPPED_BEFORE_ORDER'))
-    notices.push('商家自己的物流证据不足以证明送达：系统不建议把这个单号提交给 PayPal。');
+    notices.push("The merchant's own tracking evidence does not prove delivery: do not submit this tracking number to PayPal.");
   if (has('TRACKING_NOT_DELIVERED') || has('TRACKING_STATUS_UNKNOWN'))
-    notices.push('物流还没有可核对的签收记录，不能据此退款。');
+    notices.push('There is no verifiable delivery record yet, so this cannot justify a refund.');
   if (has('AI_PROVENANCE_FOUND'))
-    notices.push('有文件在内容凭证里声明整份内容由生成式 AI 从零生成。这类文件不能当作实拍证据，系统已按高风险处理；如需给买家机会，请让其现场补拍。');
+    notices.push('A file declares in its content credentials that it was fully generated by AI. It cannot count as photographic evidence and has been treated as high risk. To give the buyer a chance, ask for live photos.');
   if (has('PROVENANCE_CLAIM_UNVERIFIED'))
-    notices.push('文件中的来源声明尚未核验签名、签署者和内容绑定，不能当作索赔不成立的依据。需要未经编辑的原图，或其他独立证据。');
+    notices.push('The provenance claim in the file has not been verified for signature, signer, or content binding, so it cannot be used to refute the claim. An unedited original photo or other independent evidence is needed.');
   if (has('IDENTITY_MISMATCH'))
-    notices.push('序列号与留底不符，也可能是仓库错发。请先核对发货记录，不要直接当成买家欺诈。');
-  if (!policy.returnable) notices.push('类目策略：该类商品不要求退货。');
-  if (policy.perishable) notices.push('类目策略：易腐商品，重点看签收到首次反馈的间隔。');
+    notices.push('The serial number does not match the shipment reference, which may be a warehouse shipping error. Check the shipping records first; do not treat it as buyer fraud.');
+  if (!policy.returnable) notices.push('Category policy: returns not required for this category.');
+  if (policy.perishable) notices.push('Category policy: perishable item; focus on the time between delivery and the first report.');
   if (input.merchantFactors.listingChangedAfterOrder)
-    notices.push('下单后商品描述被修改过：本次按下单时的商品快照判定。');
-  if (claim.alreadyAgreed) notices.push('时间线显示双方已就退款达成一致：不再建议反驳。');
+    notices.push('The listing was edited after the order: this verdict uses the listing snapshot at order time.');
+  if (claim.alreadyAgreed && hardHits.length === 0) notices.push('The timeline shows both parties agreed on a refund: contesting is no longer recommended.');
+  if (claim.alreadyAgreed && hardHits.length > 0)
+    notices.push('The merchant previously agreed to a refund in messages, but the evidence hit a hard rule. This is not treated as agreed; confirm manually before refunding.');
   if (input.merchantFactors.missingReferenceOrWeight)
-    notices.push('本订单缺少留底或发货称重：部分比对无法进行，发货前留底可以提高判定质量。');
+    notices.push('This order has no shipment reference or shipping weight: some comparisons cannot run. Reference photos before shipping improve verdict quality.');
+
+  // 序列号不符时允许退款，是为了让商家处理自己的错发。买家能伪造的照片不能打开这个口子：
+  // 序列号必须来自现场拍摄或系统记录，那张图不能带 AI 来源声明，分析要跑完，也不能有伪造类的反证。
+  const taintedIds = taintedEvidenceIds(signals);
+  const identityRefund =
+    hardHits.length === 0 &&
+    !incomplete &&
+    !signals.some((s) => s.direction === 'contradicts_claim' && FABRICATION_CODES.has(s.code)) &&
+    signals.some(
+      (s) =>
+        s.code === 'IDENTITY_MISMATCH' &&
+        s.direction === 'contradicts_claim' &&
+        (SOURCE_LAYER[s.basisSource] === 'A' || SOURCE_LAYER[s.basisSource] === 'B') &&
+        !s.evidenceIds.some((id) => taintedIds.has(id)),
+    );
 
   const shotNames = (list: string[]) => list.map((s) => SHOT_LABEL[s] ?? s);
   const { primary, alternatives } = buildActions({
@@ -321,12 +352,11 @@ export function decide(input: EngineInput): VerdictReport {
     lowTierShots: shotNames(lowTierShots),
     keyInsufficient: keyInsufficient.map((p) => p.label),
     incomplete,
+    identityRefund,
   });
   const payoutSuggested = primary.type === 'refund' || primary.type === 'accept_claim' || primary.type === 'make_offer';
-  const identityRefund =
-    signals.some((s) => s.code === 'IDENTITY_MISMATCH' && s.direction === 'contradicts_claim') && hardHits.length === 0;
   if (!payoutSuggested && !identityRefund) {
-    notices.push('这次判定没有建议退款。退款、接受索赔和和解都不会执行。');
+    notices.push('This verdict does not recommend a refund. Refund, accept claim, and offer will not run.');
   }
 
   return {
@@ -343,7 +373,7 @@ export function decide(input: EngineInput): VerdictReport {
       ),
       identityReview: level === 'high' && has('IDENTITY_MISMATCH') && hardHits.length === 0,
     }),
-    decisionNeeded: primary.type === 'none' ? '请人工复核后决定下一步' : `是否${primary.label}`,
+    decisionNeeded: primary.type === 'none' ? 'Review manually and decide the next step' : `${primary.label}?`,
     notices,
     primaryAction: primary,
     alternatives,
@@ -355,6 +385,7 @@ export function decide(input: EngineInput): VerdictReport {
     notRun,
     ruleTrace: trace,
     merchantFactors: input.merchantFactors,
+    identityRefund,
     rulesVersion: RULES_VERSION,
     config: input.config,
   };
@@ -368,15 +399,15 @@ function headlineFor(
   const top = findings.find((f) => f.direction === 'contradicts_claim');
   switch (level) {
     case 'high':
-      if (opts.identityReview) return '商品身份特征与留底不符，先排查是否错发';
-      return top ? top.title : '存在明确的反驳证据';
+      if (opts.identityReview) return 'Item identifiers do not match the shipment reference; check for a wrong shipment first';
+      return top ? top.title : 'Clear contradicting evidence';
     case 'medium':
-      return top ? `${top.title}，需要进一步核对` : '现有证据无法下结论，需要进一步核对';
+      return top ? `${top.title}; needs further review` : 'Current evidence is inconclusive; needs further review';
     case 'insufficient':
-      if (opts.provenanceUnverified && !opts.materialContradiction) return '来源声明未验证，需要原图或补充证据';
-      return '关键事实缺少可靠证据';
+      if (opts.provenanceUnverified && !opts.materialContradiction) return 'Unverified provenance claim; original photo or more evidence needed';
+      return 'Key facts lack reliable evidence';
     case 'low':
-      return '未发现与索赔矛盾的证据';
+      return 'No evidence contradicts the claim';
   }
 }
 

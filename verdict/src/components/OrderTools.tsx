@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { FileInput } from './FileInput';
 
 export function OrderTools({
   orderId,
@@ -28,7 +29,7 @@ export function OrderTools({
     const body = await res.json().catch(() => ({}));
     setBusy(null);
     if (!res.ok) {
-      setError(body.error ?? '操作失败');
+      setError(body.error ?? 'Action failed');
       return null;
     }
     return body;
@@ -70,23 +71,23 @@ export function OrderTools({
   return (
     <>
       <section className="card card-pad">
-        <h2>买家索赔链接</h2>
+        <h2>Buyer claim link</h2>
         <p className="muted" style={{ marginBottom: 10 }}>
-          新建一笔等待买家提交的索赔，并生成一次性签名链接。
+          Creates a claim waiting for the buyer and a one-time signed link.
         </p>
         {paypalEnv === 'sandbox' && !captureId ? (
-          <p className="muted small">这笔测试订单还没有付款。</p>
+          <p className="muted small">This test order has not been paid yet.</p>
         ) : (
           <button className="btn btn-primary" disabled={busy === 'link'} onClick={createLink}>
-            生成索赔链接
+            Create claim link
           </button>
         )}
         {link && (
           <div style={{ marginTop: 12 }}>
-            <input type="text" readOnly value={link.url} onFocus={(e) => e.currentTarget.select()} aria-label="索赔链接" />
+            <input type="text" readOnly value={link.url} onFocus={(e) => e.currentTarget.select()} aria-label="Claim link" />
             <div className="row" style={{ marginTop: 8 }}>
               <a className="btn" href={link.url} target="_blank" rel="noreferrer">
-                打开买家页面
+                Open buyer page
               </a>
               <button
                 className="btn"
@@ -95,10 +96,10 @@ export function OrderTools({
                   setCopied(true);
                 }}
               >
-                {copied ? '已复制' : '复制'}
+                {copied ? 'Copied' : 'Copy'}
               </button>
               <a className="btn" href={`/claims/${link.claimId}`}>
-                查看这笔索赔
+                View claim
               </a>
             </div>
           </div>
@@ -107,66 +108,66 @@ export function OrderTools({
 
       {paypalEnv === 'sandbox' ? (
         <section className="card card-pad">
-          <h2>发起沙箱争议</h2>
+          <h2>Open a sandbox dispute</h2>
           {captureId ? (
             <>
               <p className="muted" style={{ marginBottom: 8 }}>
-                用付款的沙箱个人账户登录 PayPal 沙箱网站，找到这笔交易并报告问题。选“没收到货”或“与描述不符”，其他类型 Verdict 暂不处理。争议大约 3 分钟后才能回应，同步过来可能也要等这么久。
+                Sign in to the PayPal sandbox site with the personal sandbox account that paid, find this transaction and report a problem. Choose "Item not received" or "Not as described". Verdict does not handle other types yet. A dispute can be answered only after about 3 minutes, and syncing it may take about as long.
               </p>
               <p className="small">
-                PayPal 交易号：<span className="mono">{captureId}</span>
+                PayPal transaction ID: <span className="mono">{captureId}</span>
               </p>
               <p className="muted small" style={{ marginTop: 8 }}>
-                同一笔交易只能开一次争议，关闭后也不能再开。测试下一个场景要重新下单。
+                A transaction can have only one dispute, and it cannot be reopened after it closes. Place a new order to test the next scenario.
               </p>
             </>
           ) : (
-            <p className="muted">付款完成后才能发起争议。</p>
+            <p className="muted">You can open a dispute after payment completes.</p>
           )}
         </section>
       ) : (
       <section className="card card-pad">
-        <h2>模拟 PayPal 争议</h2>
+        <h2>Simulate a PayPal dispute</h2>
         <p className="muted" style={{ marginBottom: 10 }}>
-          让模拟器发起一笔争议，走一遍验签、去重、拉详情、建索赔的 webhook 流程。
+          Has the simulator open a dispute and runs the full webhook flow: signature check, deduplication, fetching details and creating the claim.
         </p>
         <div className="row">
-          <button className="btn" disabled={busy === 'dispute'} onClick={() => simulate('MERCHANDISE_OR_SERVICE_NOT_RECEIVED', '我一直没有收到这个包裹。')}>
-            未收到货
+          <button className="btn" disabled={busy === 'dispute'} onClick={() => simulate('MERCHANDISE_OR_SERVICE_NOT_RECEIVED', 'I never received this package.')}>
+            Not received
           </button>
-          <button className="btn" disabled={busy === 'dispute'} onClick={() => simulate('MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED', '收到的商品和描述不一样。')}>
-            与描述不符
+          <button className="btn" disabled={busy === 'dispute'} onClick={() => simulate('MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED', 'The item I received is not as described.')}>
+            Not as described
           </button>
         </div>
       </section>
       )}
 
       <section className="card card-pad">
-        <h2>发货留底</h2>
+        <h2>Shipment reference</h2>
         <form onSubmit={uploadReference}>
           <label className="field">
-            镜头
+            Shot
             <select name="shot" defaultValue="overall">
-              <option value="overall">商品整体照</option>
-              <option value="serial_closeup">序列号特写</option>
-              <option value="package">外包装</option>
-              <option value="label">面单特写</option>
+              <option value="overall">Whole item</option>
+              <option value="serial_closeup">Serial number close-up</option>
+              <option value="package">Outer packaging</option>
+              <option value="label">Shipping label close-up</option>
             </select>
           </label>
           <label className="field">
-            图片
-            <input type="file" name="file" accept="image/jpeg,image/png,image/webp" required />
+            Image
+            <FileInput name="file" accept="image/jpeg,image/png,image/webp" required />
           </label>
           <button className="btn" disabled={busy === 'ref'}>
-            上传留底
+            Upload reference photo
           </button>
         </form>
         <label className="field" style={{ marginTop: 16 }}>
-          发货称重（克）
+          Shipping weight (g)
           <div className="row" style={{ flexWrap: 'nowrap' }}>
             <input type="number" min="1" value={weight} onChange={(e) => setWeight(e.target.value)} />
             <button type="button" className="btn" disabled={busy === 'weight'} onClick={saveWeight}>
-              保存
+              Save
             </button>
           </div>
         </label>

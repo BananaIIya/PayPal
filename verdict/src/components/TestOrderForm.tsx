@@ -19,25 +19,25 @@ export function TestOrderForm({ products }: { products: { key: string; title: st
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.approveUrl) {
-        setError(body.error ?? '下单失败');
+        setError(body.error ?? 'Could not create order');
         setBusy(false);
         return;
       }
       window.location.href = body.approveUrl;
     } catch {
-      setError('请求没有发出去，请重试');
+      setError('Request failed to send. Try again.');
       setBusy(false);
     }
   }
 
   return (
     <section className="card card-pad" style={{ marginBottom: 14 }}>
-      <h2>沙箱测试下单</h2>
+      <h2>Sandbox test order</h2>
       <p className="muted" style={{ marginBottom: 10 }}>
-        会跳转到 PayPal 沙箱，用你的沙箱个人账户付款，全程是测试资金。付款方式请选 Visa：默认的银行账户走 eCheck，款项会一直待处理，部分退款和多数争议选项都测不了。付款后用同一个账户开争议，Verdict 会自动同步过来。
+        Takes you to the PayPal sandbox to pay with your personal sandbox account. Only test funds are used. Choose Visa as the payment method: the default bank account uses eCheck, which stays pending, so partial refunds and most dispute options cannot be tested. After paying, open a dispute with the same account and Verdict syncs it automatically.
       </p>
       <form className="row" onSubmit={submit}>
-        <select value={productKey} onChange={(e) => setProductKey(e.target.value)} aria-label="测试商品" style={{ width: 'auto' }}>
+        <select value={productKey} onChange={(e) => setProductKey(e.target.value)} aria-label="Test product" style={{ width: 'auto' }}>
           {products.map((p) => (
             <option key={p.key} value={p.key}>
               {p.title} · USD {p.amount.toFixed(2)}
@@ -45,7 +45,7 @@ export function TestOrderForm({ products }: { products: { key: string; title: st
           ))}
         </select>
         <button className="btn btn-primary" disabled={busy}>
-          {busy ? '跳转中…' : '去沙箱付款'}
+          {busy ? 'Redirecting…' : 'Pay in sandbox'}
         </button>
       </form>
       {error && (

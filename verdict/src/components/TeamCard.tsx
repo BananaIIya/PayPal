@@ -6,9 +6,9 @@ import type { TeamMember } from '@/server/auth';
 import { fmtDateTime } from './format';
 
 const STATUS: Record<TeamMember['status'], { text: string; cls: string }> = {
-  active: { text: '可用', cls: 'level-low' },
-  invited: { text: '待设置密码', cls: 'badge-warn' },
-  disabled: { text: '已停用', cls: 'badge-sim' },
+  active: { text: 'Active', cls: 'level-low' },
+  invited: { text: 'Password not set', cls: 'badge-warn' },
+  disabled: { text: 'Disabled', cls: 'badge-sim' },
 };
 
 async function call(url: string, method: string, body?: unknown): Promise<{ ok: boolean; data: Record<string, unknown> }> {
@@ -16,7 +16,7 @@ async function call(url: string, method: string, body?: unknown): Promise<{ ok: 
     const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { ok: res.ok, data: await res.json().catch(() => ({})) };
   } catch {
-    return { ok: false, data: { error: '请求没有发出去，请重试' } };
+    return { ok: false, data: { error: 'Request failed to send. Try again.' } };
   }
 }
 
@@ -26,14 +26,14 @@ function LinkBox({ link, note }: { link: string; note: string }) {
     <div className="notice notice-info" style={{ marginTop: 10 }}>
       <div className="small">{note}</div>
       <div className="link-box">
-        <input type="text" readOnly value={link} aria-label="设置密码链接" onFocus={(e) => e.currentTarget.select()} />
+        <input type="text" readOnly value={link} aria-label="Set password link" onFocus={(e) => e.currentTarget.select()} />
         <button
           className="btn"
           onClick={() => {
             void navigator.clipboard?.writeText(link).then(() => setCopied(true));
           }}
         >
-          {copied ? '已复制' : '复制'}
+          {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
     </div>
@@ -57,43 +57,43 @@ export function TeamCard({ initial, selfId }: { initial: TeamMember[]; selfId: s
     setLink(null);
     const { ok, data } = await call('/api/team', 'POST', { name, email, role });
     setBusy(false);
-    if (!ok) return setError(String(data.error ?? '添加失败'));
+    if (!ok) return setError(String(data.error ?? 'Could not add member'));
     const member = data.member as TeamMember;
     setMembers((m) => [...m, member]);
-    setLink({ link: String(data.link), note: `把这个链接发给 ${member.name}，对方打开后设置密码即可登录。72 小时内有效，只能用一次，关闭后不会再显示。` });
+    setLink({ link: String(data.link), note: `Send this link to ${member.name}. They can sign in after setting a password. Valid for 72 hours, single use, and not shown again after you close it.` });
     setName('');
     setEmail('');
   }
 
   async function toggle(m: TeamMember) {
     const disabling = m.status !== 'disabled';
-    if (disabling && !window.confirm(`停用 ${m.name}？对方所有设备上的登录会立即失效。`)) return;
+    if (disabling && !window.confirm(`Disable ${m.name}? They will be signed out on all devices immediately.`)) return;
     setBusy(true);
     setError(null);
     const { ok, data } = await call(`/api/team/${m.id}`, 'PATCH', { disabled: disabling });
     setBusy(false);
-    if (!ok) return setError(String(data.error ?? '操作失败'));
+    if (!ok) return setError(String(data.error ?? 'Action failed'));
     const updated = data.member as TeamMember;
     setMembers((list) => list.map((x) => (x.id === updated.id ? updated : x)));
   }
 
   async function reissue(m: TeamMember) {
-    const text = m.status === 'invited' ? `重新生成 ${m.name} 的邀请链接？之前的链接会失效。` : `给 ${m.name} 生成重置密码链接？对方设置新密码后，旧密码和已登录的设备都会失效。`;
+    const text = m.status === 'invited' ? `Create a new invite link for ${m.name}? The previous link will stop working.` : `Create a password reset link for ${m.name}? After they set a new password, the old password and all signed-in devices stop working.`;
     if (!window.confirm(text)) return;
     setBusy(true);
     setError(null);
     setLink(null);
     const { ok, data } = await call(`/api/team/${m.id}/link`, 'POST');
     setBusy(false);
-    if (!ok) return setError(String(data.error ?? '生成失败'));
-    setLink({ link: String(data.link), note: `把这个链接发给 ${m.name}。72 小时内有效，只能用一次，关闭后不会再显示。` });
+    if (!ok) return setError(String(data.error ?? 'Could not create link'));
+    setLink({ link: String(data.link), note: `Send this link to ${m.name}. Valid for 72 hours, single use, and not shown again after you close it.` });
   }
 
   return (
     <section className="card card-pad">
-      <h2>成员</h2>
+      <h2>Members</h2>
       <p className="muted small" style={{ marginBottom: 10 }}>
-        店主可以确认退款、接受索赔、和解、确认收到退货，管理成员、PayPal 凭证和判定设置。客服可以查看索赔、发消息、提交证据、升级和申诉，不能确认资金动作。
+        Owners can confirm refunds, accept claims, make offers, confirm returned items, and manage members, PayPal credentials and verdict settings. Agents can view claims, send messages, submit evidence, escalate and appeal, but cannot confirm money actions.
       </p>
       {/* 卡片在两栏布局里很窄，用列表而不是表格，避免右侧的操作被挤出可视区。 */}
       <ul className="member-list">
@@ -102,10 +102,10 @@ export function TeamCard({ initial, selfId }: { initial: TeamMember[]; selfId: s
             <div>
               <div>
                 {m.name}
-                {m.id === selfId && <span className="muted small">（你）</span>}
+                {m.id === selfId && <span className="muted small"> (you)</span>}
               </div>
               <div className="muted small">
-                {m.email} · 最近登录 {m.lastLoginAt ? fmtDateTime(m.lastLoginAt) : '—'}
+                {m.email} · Last sign-in {m.lastLoginAt ? fmtDateTime(m.lastLoginAt) : '—'}
               </div>
             </div>
             <div className="row">
@@ -113,12 +113,12 @@ export function TeamCard({ initial, selfId }: { initial: TeamMember[]; selfId: s
               <span className={`badge ${STATUS[m.status].cls}`}>{STATUS[m.status].text}</span>
               {m.id !== selfId && m.status !== 'disabled' && (
                 <button className="btn-link small" disabled={busy} onClick={() => reissue(m)}>
-                  {m.status === 'invited' ? '重新邀请' : '重置密码'}
+                  {m.status === 'invited' ? 'Reinvite' : 'Reset password'}
                 </button>
               )}
               {m.id !== selfId && (
                 <button className="btn-link small" disabled={busy} onClick={() => toggle(m)}>
-                  {m.status === 'disabled' ? '启用' : '停用'}
+                  {m.status === 'disabled' ? 'Enable' : 'Disable'}
                 </button>
               )}
             </div>
@@ -127,26 +127,26 @@ export function TeamCard({ initial, selfId }: { initial: TeamMember[]; selfId: s
       </ul>
       {link && <LinkBox link={link.link} note={link.note} />}
       <form onSubmit={invite} style={{ marginTop: 14 }}>
-        <h3 style={{ marginBottom: 8 }}>添加成员</h3>
+        <h3 style={{ marginBottom: 8 }}>Add member</h3>
         <div className="settings-grid">
           <label className="field">
-            名字
+            Name
             <input type="text" required maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
           </label>
           <label className="field">
-            邮箱（登录用）
+            Email (used to sign in)
             <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
           <label className="field">
-            角色
+            Role
             <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-              <option value="agent">客服</option>
-              <option value="owner">店主</option>
+              <option value="agent">Agent</option>
+              <option value="owner">Owner</option>
             </select>
           </label>
         </div>
         <button className="btn btn-primary" disabled={busy}>
-          {busy ? '处理中…' : '添加并生成邀请链接'}
+          {busy ? 'Working…' : 'Add and create invite link'}
         </button>
       </form>
       {error && (

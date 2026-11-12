@@ -27,8 +27,8 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
 
   return (
     <>
-      <p className="small">
-        <Link href="/orders">← 订单列表</Link>
+      <p className="crumb">
+        <Link href="/orders">Orders &amp; references</Link> / {order.order_no}
       </p>
       <div className="page-head">
         <h1>
@@ -43,17 +43,17 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
       <div className="two-col">
         <div className="stack" style={{ gap: 14 }}>
           <section className="card card-pad">
-            <h2>订单信息</h2>
+            <h2>Order details</h2>
             <dl className="kv">
-              <dt>金额</dt>
+              <dt>Amount</dt>
               <dd className="num">{fmtMoney(order.amount, order.currency)}</dd>
               {capture && (
                 <>
-                  <dt>付款状态</dt>
+                  <dt>Payment status</dt>
                   <dd title={capture.error ?? undefined}>{capture.summary}</dd>
                 </>
               )}
-              <dt>商品</dt>
+              <dt>Items</dt>
               <dd>
                 {items.map((i) => (
                   <div key={i.sku}>
@@ -61,27 +61,27 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                   </div>
                 ))}
               </dd>
-              <dt>买家</dt>
+              <dt>Buyer</dt>
               <dd>{order.buyer_name ?? '—'}</dd>
-              <dt>收货地址</dt>
+              <dt>Shipping address</dt>
               <dd>
-                {address ? `${address.line1 ?? ''}，${address.city ?? ''} ${address.postalCode ?? ''}` : '—'}
+                {address ? `${address.line1 ?? ''}, ${address.city ?? ''} ${address.postalCode ?? ''}` : '—'}
               </dd>
-              <dt>下单时间</dt>
+              <dt>Ordered</dt>
               <dd>{fmtDateTime(order.created_at)}</dd>
-              <dt>下单时描述</dt>
+              <dt>Listing description at purchase</dt>
               <dd>{snapshot?.description ?? '—'}</dd>
             </dl>
           </section>
           <section className="card card-pad">
-            <h2>物流轨迹</h2>
+            <h2>Tracking</h2>
             {tracking ? (
               <>
                 <p className="small muted" style={{ marginBottom: 6 }}>
                   {order.carrier} <span className="mono">{order.tracking_number}</span>
-                  {tracking.weightG ? ` · 物流称重 ${tracking.weightG}g` : ''}
-                  {tracking.deliveredPostalCode ? ` · 签收邮编 ${tracking.deliveredPostalCode}` : ''}
-                  <span className="badge badge-sim" style={{ marginLeft: 6 }}>模拟数据</span>
+                  {tracking.weightG ? ` · Carrier weight ${tracking.weightG}g` : ''}
+                  {tracking.deliveredPostalCode ? ` · Delivered to postal code ${tracking.deliveredPostalCode}` : ''}
+                  <span className="badge badge-sim" style={{ marginLeft: 6 }}>Simulated data</span>
                 </p>
                 <ol className="timeline">
                   {tracking.events.map((e) => (
@@ -97,15 +97,15 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                 <p className="small" style={{ marginBottom: 6 }}>
                   {order.carrier} <span className="mono">{order.tracking_number}</span>
                 </p>
-                <p className="muted small">没有物流轨迹：还没有接入物流接口（EasyPost、Shippo），Logistics 分析器会标为未执行。</p>
+                <p className="muted small">No tracking events: no carrier API is connected yet (EasyPost, Shippo), so the Logistics analyzer is marked as not run.</p>
               </>
             ) : (
-              <p className="muted">这笔订单没有物流信息。</p>
+              <p className="muted">This order has no shipping information.</p>
             )}
           </section>
           <section className="card card-pad">
-            <h2>索赔</h2>
-            {claims.length === 0 && <p className="muted">还没有索赔。</p>}
+            <h2>Claims</h2>
+            {claims.length === 0 && <p className="muted">No claims yet.</p>}
             {claims.map((c) => (
               <p key={c.id}>
                 <Link href={`/claims/${c.id}`}>
@@ -119,15 +119,15 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
         <div className="stack" style={{ gap: 14 }}>
           <OrderTools orderId={id} initialWeight={order.shipped_weight_g} paypalEnv={order.paypal_env} captureId={order.capture_id} />
           <section className="card card-pad">
-            <h2>留底照（{refs.length}）</h2>
+            <h2>Reference photos ({refs.length})</h2>
             {refs.length === 0 ? (
-              <p className="muted">这笔订单没有留底，部分比对无法进行。</p>
+              <p className="muted">This order has no reference photos, so some comparisons cannot run.</p>
             ) : (
               <div className="ref-grid">
                 {refs.map((r) => (
                   <figure key={r.id}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={`/api/evidence/${r.id}/file`} alt={SHOT_LABEL[r.shot_label ?? ''] ?? '留底'} />
+                    <img src={`/api/evidence/${r.id}/file`} alt={SHOT_LABEL[r.shot_label ?? ''] ?? 'Reference photo'} />
                     <figcaption>{SHOT_LABEL[r.shot_label ?? ''] ?? r.shot_label}</figcaption>
                   </figure>
                 ))}

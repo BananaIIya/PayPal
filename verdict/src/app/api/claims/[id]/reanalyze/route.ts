@@ -12,9 +12,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const auth = authorize(req, { write: true });
   if (auth instanceof NextResponse) return auth;
   const { id } = await params;
-  if (!getClaim(id)) return NextResponse.json({ error: '索赔不存在' }, { status: 404 });
-  if (hasPurgedEvidence(id)) return NextResponse.json({ error: '证据原件已按保留期删除，不能重新分析，原来的信号和判定保留' }, { status: 409 });
-  addTimeline(id, 'analysis', '商家请求重新分析', `操作人：${actorLabel(auth.id)}`);
+  if (!getClaim(id)) return NextResponse.json({ error: 'Claim not found' }, { status: 404 });
+  if (hasPurgedEvidence(id)) return NextResponse.json({ error: 'Evidence originals were deleted after the retention period, so the claim cannot be re-analyzed. The original signals and verdict are kept.' }, { status: 409 });
+  addTimeline(id, 'analysis', 'Merchant requested re-analysis', `By: ${actorLabel(auth.id)}`);
   startAnalysis(id);
   return NextResponse.json({ started: true });
 }

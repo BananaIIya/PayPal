@@ -9,7 +9,7 @@ async function post(url: string, body: unknown): Promise<{ ok: boolean; data: Re
     const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     return { ok: res.ok, data: await res.json().catch(() => ({})) };
   } catch {
-    return { ok: false, data: { error: '请求没有发出去，请检查网络后重试' } };
+    return { ok: false, data: { error: 'Request failed to send. Check your connection and try again.' } };
   }
 }
 
@@ -31,7 +31,7 @@ export function LoginForm({ next }: { next: string }) {
     const { ok, data } = await post('/api/auth/login', { email, password, next });
     if (!ok) {
       s.setBusy(false);
-      s.setError(String(data.error ?? '登录失败'));
+      s.setError(String(data.error ?? 'Sign-in failed'));
       return;
     }
     // 整页跳转，让服务端组件带着新的会话重新渲染。
@@ -41,11 +41,11 @@ export function LoginForm({ next }: { next: string }) {
   return (
     <form onSubmit={submit}>
       <label className="field">
-        邮箱
+        Email
         <input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
       </label>
       <label className="field">
-        密码
+        Password
         <input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
       </label>
       {s.error && (
@@ -54,10 +54,10 @@ export function LoginForm({ next }: { next: string }) {
         </p>
       )}
       <button className="btn btn-primary" style={{ width: '100%' }} disabled={s.busy}>
-        {s.busy ? '登录中…' : '登录'}
+        {s.busy ? 'Signing in…' : 'Sign in'}
       </button>
       <p className="muted small" style={{ marginTop: 12 }}>
-        忘记密码：客服请找店主重新生成链接；店主在服务端运行 <code>npm run account-link -- 你的邮箱</code>。
+        Forgot your password? Agents: ask the owner for a new link. Owners: run <code>npm run account-link -- your-email</code> on the server.
       </p>
     </form>
   );
@@ -67,11 +67,11 @@ function NewPasswordFields(p: { password: string; setPassword: (v: string) => vo
   return (
     <>
       <label className="field">
-        密码（至少 {MIN_PASSWORD} 位）
+        Password (at least {MIN_PASSWORD} characters)
         <input type="password" autoComplete="new-password" required minLength={MIN_PASSWORD} value={p.password} onChange={(e) => p.setPassword(e.target.value)} />
       </label>
       <label className="field">
-        再输一次
+        Confirm password
         <input type="password" autoComplete="new-password" required value={p.confirm} onChange={(e) => p.setConfirm(e.target.value)} />
       </label>
     </>
@@ -79,8 +79,8 @@ function NewPasswordFields(p: { password: string; setPassword: (v: string) => vo
 }
 
 function mismatch(password: string, confirm: string): string | null {
-  if (password.length < MIN_PASSWORD) return `密码至少 ${MIN_PASSWORD} 位`;
-  if (password !== confirm) return '两次输入的密码不一样';
+  if (password.length < MIN_PASSWORD) return `Password must be at least ${MIN_PASSWORD} characters`;
+  if (password !== confirm) return 'Passwords do not match';
   return null;
 }
 
@@ -100,7 +100,7 @@ export function SetupForm({ token }: { token: string }) {
     const { ok, data } = await post('/api/auth/setup', { token, name, email, password });
     if (!ok) {
       s.setBusy(false);
-      s.setError(String(data.error ?? '创建失败'));
+      s.setError(String(data.error ?? 'Could not create account'));
       return;
     }
     window.location.assign('/claims');
@@ -109,11 +109,11 @@ export function SetupForm({ token }: { token: string }) {
   return (
     <form onSubmit={submit}>
       <label className="field">
-        名字
+        Name
         <input type="text" autoComplete="name" required maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <label className="field">
-        邮箱（登录用）
+        Email (used to sign in)
         <input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
       </label>
       <NewPasswordFields password={password} setPassword={setPassword} confirm={confirm} setConfirm={setConfirm} />
@@ -123,7 +123,7 @@ export function SetupForm({ token }: { token: string }) {
         </p>
       )}
       <button className="btn btn-primary" style={{ width: '100%' }} disabled={s.busy}>
-        {s.busy ? '创建中…' : '创建并登录'}
+        {s.busy ? 'Creating…' : 'Create and sign in'}
       </button>
     </form>
   );
@@ -143,7 +143,7 @@ export function SetPasswordForm({ token, email }: { token: string; email: string
     const { ok, data } = await post('/api/auth/password', { token, password });
     if (!ok) {
       s.setBusy(false);
-      s.setError(String(data.error ?? '设置失败'));
+      s.setError(String(data.error ?? 'Could not set password'));
       return;
     }
     window.location.assign('/claims');
@@ -160,7 +160,7 @@ export function SetPasswordForm({ token, email }: { token: string; email: string
         </p>
       )}
       <button className="btn btn-primary" style={{ width: '100%' }} disabled={s.busy}>
-        {s.busy ? '保存中…' : '设置密码并登录'}
+        {s.busy ? 'Saving…' : 'Set password and sign in'}
       </button>
     </form>
   );
@@ -175,7 +175,7 @@ export function LogoutButton() {
   }
   return (
     <button className="btn btn-ghost-dark" onClick={logout} disabled={busy}>
-      退出
+      Sign out
     </button>
   );
 }

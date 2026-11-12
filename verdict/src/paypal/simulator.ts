@@ -74,7 +74,7 @@ function toView(row: DisputeRow): DisputeView {
 class SimulatorError extends Error {}
 
 export class PayPalSimulator implements PayPalClient {
-  readonly name = 'PayPal 模拟器';
+  readonly name = 'PayPal simulator';
 
   async getDispute(id: string): Promise<DisputeView | null> {
     const row = load(id);
@@ -102,8 +102,8 @@ export class PayPalSimulator implements PayPalClient {
   ): PayPalWriteResult {
     return this.idempotent(requestId, () => {
       const row = load(disputeId);
-      if (!row) throw new SimulatorError(`争议不存在：${disputeId}`);
-      if (!allowed(row).includes(action)) throw new SimulatorError(`争议状态 ${row.status} 不允许 ${action}`);
+      if (!row) throw new SimulatorError(`Dispute not found: ${disputeId}`);
+      if (!allowed(row).includes(action)) throw new SimulatorError(`Dispute status ${row.status} does not allow ${action}`);
       const log = json<unknown[]>(row.log, []);
       log.push({ at: nowIso(), op: operation, detail });
       db()
@@ -170,12 +170,12 @@ export class PayPalSimulator implements PayPalClient {
   async refundCapture(captureId: string, input: { amount: number; currency: string }, requestId: string) {
     return this.idempotent(requestId, () => {
       const order = db().prepare('SELECT amount FROM orders WHERE capture_id = ?').get(captureId) as { amount: number } | undefined;
-      if (!order) throw new SimulatorError(`捕获记录不存在：${captureId}`);
+      if (!order) throw new SimulatorError(`Capture not found: ${captureId}`);
       const refunded = db().prepare('SELECT COALESCE(SUM(amount), 0) AS total FROM sim_refunds WHERE capture_id = ?').get(captureId) as {
         total: number;
       };
       if (input.amount <= 0 || input.amount + refunded.total > order.amount + 0.001) {
-        throw new SimulatorError(`退款金额超出可退余额（可退 ${(order.amount - refunded.total).toFixed(2)}）`);
+        throw new SimulatorError(`Refund amount exceeds the refundable balance (refundable: ${(order.amount - refunded.total).toFixed(2)})`);
       }
       const id = `SIM-REFUND-${newId().slice(0, 8)}`;
       db().prepare('INSERT INTO sim_refunds (id, capture_id, amount, created_at) VALUES (?, ?, ?, ?)').run(id, captureId, input.amount, nowIso());

@@ -7,7 +7,7 @@ import { limitPortal } from '@/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
-const ACTIONS = ['把商品翻到背面', '用手指一下问题部位', '把商品转动 90 度', '把纸条放到商品左侧', '把纸条放到商品右侧'];
+const ACTIONS = ['Turn the item over', 'Point at the problem area', 'Rotate the item 90 degrees', 'Put the note to the left of the item', 'Put the note to the right of the item'];
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 去掉容易混淆的 0 O 1 I L
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {

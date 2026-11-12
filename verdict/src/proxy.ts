@@ -15,12 +15,13 @@ function isPublic(pathname: string): boolean {
 export function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
   if (isPublic(pathname) || req.cookies.has(SESSION_COOKIE)) return NextResponse.next();
-  if (pathname.startsWith('/api/')) return NextResponse.json({ error: '请先登录' }, { status: 401 });
+  if (pathname.startsWith('/api/')) return NextResponse.json({ error: 'Sign in first' }, { status: 401 });
   const url = new URL('/login', req.url);
   if (pathname !== '/') url.searchParams.set('next', `${pathname}${search}`);
   return NextResponse.redirect(url);
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  // icon.svg 是站点图标，登录页和买家索赔页（都没有会话）也要能加载。
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.svg).*)'],
 };

@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   // 登录也要拦跨站请求：否则别的网站能让你登录进它控制的账号（登录 CSRF）。
-  if (isCrossSite(req)) return NextResponse.json({ error: '拒绝跨站请求' }, { status: 403 });
+  if (isCrossSite(req)) return NextResponse.json({ error: 'Cross-site request rejected' }, { status: 403 });
   const limited = limitAuth(req);
   if (limited) return limited;
   await ready();

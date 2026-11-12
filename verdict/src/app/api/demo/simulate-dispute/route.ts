@@ -11,9 +11,9 @@ export async function POST(req: NextRequest) {
   const auth = authorize(req, { write: true });
   if (auth instanceof NextResponse) return auth;
   const body = await req.json().catch(() => ({}));
-  if (!getOrder(String(body.orderId))) return NextResponse.json({ error: '订单不存在' }, { status: 404 });
+  if (!getOrder(String(body.orderId))) return NextResponse.json({ error: 'Order not found' }, { status: 404 });
   const reason = String(body.reason);
-  if (!(reason in CLAIM_TYPE_BY_REASON)) return NextResponse.json({ error: '争议原因无效' }, { status: 400 });
-  const out = await simulateDispute(String(body.orderId), reason, String(body.message ?? '买家在 PayPal 发起了争议。').slice(0, 2000));
+  if (!(reason in CLAIM_TYPE_BY_REASON)) return NextResponse.json({ error: 'Invalid dispute reason' }, { status: 400 });
+  const out = await simulateDispute(String(body.orderId), reason, String(body.message ?? 'The buyer opened a dispute on PayPal.').slice(0, 2000));
   return NextResponse.json(out.body, { status: out.status });
 }

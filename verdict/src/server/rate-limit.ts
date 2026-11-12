@@ -49,7 +49,7 @@ export function clientIp(req: NextRequest): string {
 
 export function tooMany(retryAfter: number): NextResponse {
   return NextResponse.json(
-    { error: `操作太频繁，请 ${retryAfter} 秒后再试` },
+    { error: `Too many requests. Try again in ${retryAfter} s.` },
     { status: 429, headers: { 'Retry-After': String(retryAfter) } },
   );
 }

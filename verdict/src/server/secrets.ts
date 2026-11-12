@@ -11,7 +11,7 @@ export function encryptionKey(): Buffer | null {
   const raw = process.env.APP_ENCRYPTION_KEY?.trim();
   if (!raw) return null;
   const key = /^[0-9a-fA-F]{64}$/.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64');
-  if (key.length !== 32) throw new EncryptionKeyError('APP_ENCRYPTION_KEY 必须是 32 字节：64 位十六进制，或 base64。可以用 openssl rand -hex 32 生成。');
+  if (key.length !== 32) throw new EncryptionKeyError('APP_ENCRYPTION_KEY must be 32 bytes: 64 hex characters, or base64. Generate one with openssl rand -hex 32.');
   return key;
 }
 
@@ -25,7 +25,7 @@ export function encryptionKeyState(): { configured: boolean; error: string | nul
 
 function requireKey(): Buffer {
   const key = encryptionKey();
-  if (!key) throw new EncryptionKeyError('没有配置 APP_ENCRYPTION_KEY，不能加密存储凭证。');
+  if (!key) throw new EncryptionKeyError('APP_ENCRYPTION_KEY is not configured, so credentials cannot be stored encrypted.');
   return key;
 }
 
@@ -43,13 +43,13 @@ export function encryptSecret(plain: string, aad: string): string {
 
 export function decryptSecret(enc: string, aad: string): string {
   const [version, iv, tag, ct] = enc.split('.');
-  if (version !== VERSION || !iv || !tag || ct === undefined) throw new Error('密文格式无法识别');
+  if (version !== VERSION || !iv || !tag || ct === undefined) throw new Error('Unrecognized ciphertext format');
   const decipher = crypto.createDecipheriv('aes-256-gcm', requireKey(), Buffer.from(iv, 'base64url'));
   decipher.setAAD(Buffer.from(aad));
   decipher.setAuthTag(Buffer.from(tag, 'base64url'));
   try {
     return Buffer.concat([decipher.update(Buffer.from(ct, 'base64url')), decipher.final()]).toString('utf8');
   } catch {
-    throw new EncryptionKeyError('无法解密：APP_ENCRYPTION_KEY 和加密时用的不一致，或者密文被改过。');
+    throw new EncryptionKeyError('Decryption failed: APP_ENCRYPTION_KEY differs from the one used to encrypt, or the ciphertext was modified.');
   }
 }

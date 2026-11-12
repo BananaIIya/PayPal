@@ -4,7 +4,7 @@ import { PayPalSimulator } from './simulator';
 
 export function requireSandbox(): PayPalSandbox {
   const client = getSandboxClient();
-  if (!client) throw new PayPalApiError('PayPal 沙箱未配置或配置有误，请查看设置页。');
+  if (!client) throw new PayPalApiError('The PayPal sandbox is not configured or is misconfigured. Check Settings.');
   return client;
 }
 

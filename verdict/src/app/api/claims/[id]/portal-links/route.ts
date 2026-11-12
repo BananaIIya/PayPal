@@ -13,7 +13,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (auth instanceof NextResponse) return auth;
   const { id } = await params;
   const claim = getClaim(id);
-  if (!claim) return NextResponse.json({ error: '索赔不存在' }, { status: 404 });
+  if (!claim) return NextResponse.json({ error: 'Claim not found' }, { status: 404 });
   const token = issuePortalToken({ merchantId: claim.merchant_id, orderId: claim.order_id, claimId: id });
   return NextResponse.json({ token, url: `${requestOrigin(req)}/c/${token}` });
 }

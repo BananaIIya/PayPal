@@ -83,7 +83,7 @@ export type ActionType =
 
 /** 控制台角色。开发文档：退款、接受索赔等资金动作仅所有者可确认。 */
 export type Role = 'owner' | 'agent';
-export const ROLE_LABEL: Record<Role, string> = { owner: '店主', agent: '客服' };
+export const ROLE_LABEL: Record<Role, string> = { owner: 'Owner', agent: 'Agent' };
 
 /**
  * 会让钱离开商家的动作，只有店主能确认。
@@ -227,6 +227,8 @@ export interface VerdictReport {
   notRun: { analyzer: AnalyzerName; status: RunStatus; reason: string }[];
   ruleTrace: string[];
   merchantFactors: MerchantRiskFactors;
+  /** 序列号不符、证据够硬，可能是商家错发：中高风险下也允许退款。旧报告没有这个字段，按不允许处理。 */
+  identityRefund?: boolean;
   rulesVersion: string;
   /** 这次判定用的权重与阈值，审计记录要能看出当时按什么配置算的。 */
   config: EngineConfig;

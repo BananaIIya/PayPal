@@ -16,7 +16,7 @@ function logSetupLink(): void {
   if (!token) return;
   g.__verdictSetupLogged = true;
   const base = process.env.PUBLIC_URL?.replace(/\/+$/, '') || `http://127.0.0.1:${process.env.PORT ?? 3000}`;
-  console.log(`\n[verdict] 还没有控制台账号。打开下面的链接创建店主账号（也可以运行 npm run account-link 再看一次）：\n[verdict] ${base}/setup?token=${token}\n`);
+  console.log(`\n[verdict] No console account yet. Open this link to create the owner account (run npm run account-link to see it again):\n[verdict] ${base}/setup?token=${token}\n`);
 }
 
 /**
@@ -29,7 +29,7 @@ function ensureSandboxSync(): void {
   const run = () =>
     ready()
       .then(() => (paypalConfig().state === 'ready' ? import('./paypal-sync').then((m) => m.syncSandboxDisputes()) : null))
-      .catch((e) => console.error('[verdict] PayPal 同步失败', e instanceof Error ? e.message : e));
+      .catch((e) => console.error('[verdict] PayPal sync failed', e instanceof Error ? e.message : e));
   g.__verdictSyncTimer = setInterval(run, SYNC_INTERVAL_MS);
   g.__verdictSyncTimer.unref?.();
   void run();
@@ -52,6 +52,6 @@ export function ready(): Promise<void> {
   void g.__verdictReady
     .then(() => import('./data-retention'))
     .then((m) => m.purgeIfDue())
-    .catch((e) => console.error('[verdict] 保留期检查失败', e instanceof Error ? e.message : e));
+    .catch((e) => console.error('[verdict] Retention check failed', e instanceof Error ? e.message : e));
   return g.__verdictReady;
 }

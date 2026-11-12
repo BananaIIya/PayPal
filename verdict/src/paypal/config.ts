@@ -39,7 +39,7 @@ function storedConfig(): PayPalConfig | null {
     const clientSecret = decryptSecret(row.secret_enc, credentialAad(row.merchant_id));
     cfg = { state: 'ready', clientId: row.client_id, clientSecret, webhookId: row.webhook_id, source: 'database' };
   } catch (e) {
-    cfg = { state: 'invalid', source: 'database', error: `设置页保存的 PayPal 凭证无法解密：${e instanceof Error ? e.message : String(e)}` };
+    cfg = { state: 'invalid', source: 'database', error: `The PayPal credentials saved in Settings could not be decrypted: ${e instanceof Error ? e.message : String(e)}` };
   }
   memo = { key, cfg };
   return cfg;
@@ -53,10 +53,10 @@ export function envPayPalConfig(): PayPalConfig {
 
   if (!env && !clientId && !clientSecret) return { state: 'off' };
   if (env === 'live') {
-    return { state: 'invalid', source: 'env', error: 'PAYPAL_ENV=live 不受支持：这个版本只对接沙箱，不会动用真实资金。' };
+    return { state: 'invalid', source: 'env', error: 'PAYPAL_ENV=live is not supported: this version only connects to the sandbox and never moves real money.' };
   }
-  if (env !== 'sandbox') return { state: 'invalid', source: 'env', error: 'PAYPAL_ENV 必须设为 sandbox。' };
-  if (!clientId || !clientSecret) return { state: 'invalid', source: 'env', error: '缺少 PAYPAL_CLIENT_ID 或 PAYPAL_CLIENT_SECRET。' };
+  if (env !== 'sandbox') return { state: 'invalid', source: 'env', error: 'PAYPAL_ENV must be set to sandbox.' };
+  if (!clientId || !clientSecret) return { state: 'invalid', source: 'env', error: 'PAYPAL_CLIENT_ID or PAYPAL_CLIENT_SECRET is missing.' };
   return { state: 'ready', clientId, clientSecret, webhookId, source: 'env' };
 }
 

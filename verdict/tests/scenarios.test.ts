@@ -78,19 +78,19 @@ describe('验收场景', () => {
     const r = byKey.get('ai_watermark')!.report;
     const finding = r.findings.find((f) => f.code === 'PROVENANCE_CLAIM_UNVERIFIED')!;
     expect(finding.hardRule).toBe(false);
-    expect(finding.normalExplanations.join()).toContain('圈出了瑕疵');
-    expect(r.headline).toContain('来源声明未验证');
-    expect(r.primaryAction.label).toBe('请买家提供原图');
-    expect(r.notices.join()).toContain('不能当作索赔不成立的依据');
+    expect(finding.normalExplanations.join()).toContain('circle the defect');
+    expect(r.headline).toContain('Unverified provenance claim');
+    expect(r.primaryAction.label).toBe('Ask buyer for original photo');
+    expect(r.notices.join()).toContain('cannot be used to refute the claim');
   });
 
   it('序列号不符时判高风险，但仍先排查错发，不直接建议反驳', () => {
     const r = byKey.get('identity_mismatch')!.report;
     expect(r.level).toBe('high');
     expect(r.findings.find((f) => f.code === 'IDENTITY_MISMATCH')!.hardRule).toBe(false);
-    expect(r.headline).toContain('先排查是否错发');
-    expect(r.primaryAction.label).toBe('先排查是否错发');
-    expect(r.notices.join()).toContain('错发');
+    expect(r.headline).toContain('check for a wrong shipment first');
+    expect(r.primaryAction.label).toBe('Check for a wrong shipment first');
+    expect(r.notices.join()).toContain('warehouse shipping error');
     expect(r.primaryAction.type).toBe('none');
   });
 
@@ -98,14 +98,14 @@ describe('验收场景', () => {
     const r = byKey.get('cross_contradiction')!.report;
     expect(r.level).toBe('medium');
     expect(r.findings.find((f) => f.code === 'CROSS_EVIDENCE_CONTRADICTION')!.hardRule).toBe(false);
-    expect(r.primaryAction.label).toBe('请买家说明');
+    expect(r.primaryAction.label).toBe('Ask buyer to explain');
     expect(r.primaryAction.type).toBe('send_message');
   });
 
   it('已签收且邮编一致时才确认送到订单地址', () => {
     const finding = byKey.get('delivered_not_received')!.report.findings.find((f) => f.code === 'DELIVERED_CONFIRMED')!;
     expect(finding.explanation).toContain('94107');
-    expect(finding.explanation).not.toContain('未知');
+    expect(finding.explanation).not.toMatch(/unknown/i);
   });
 
   it('已签收的未收到货争议建议提交物流证据', () => {
@@ -117,7 +117,7 @@ describe('验收场景', () => {
 
   it('卖家单号不符时提示商家，不代为提交', () => {
     const r = byKey.get('seller_bad_tracking')!.report;
-    expect(r.notices.join()).toContain('物流证据不足');
+    expect(r.notices.join()).toContain('does not prove delivery');
     expect([r.primaryAction, ...r.alternatives].map((a) => a.type)).not.toContain('provide_evidence');
   });
 
@@ -141,13 +141,13 @@ describe('验收场景', () => {
   it('详情页被修改：M 上升并提示按快照判定', () => {
     const r = byKey.get('listing_changed')!.report;
     expect(r.merchantRisk).toBeGreaterThan(0);
-    expect(r.notices.join()).toContain('下单时的商品快照');
+    expect(r.notices.join()).toContain('listing snapshot at order time');
   });
 
   it('易腐商品不要求退货，且先提示安全事件', () => {
     const r = byKey.get('perishable')!.report;
-    expect(r.notices[0]).toContain('安全事件');
-    expect(r.notices.join()).toContain('不要求退货');
+    expect(r.notices[0]).toContain('safety incident');
+    expect(r.notices.join()).toContain('returns not required');
   });
 
   it('提示注入：判定与不含注入文字的同类场景一致', () => {

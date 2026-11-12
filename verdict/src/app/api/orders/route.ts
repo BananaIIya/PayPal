@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
   await ready();
   const body = await req.json().catch(() => undefined);
-  if (body === undefined) return NextResponse.json({ error: '请求体要是 JSON' }, { status: 400 });
+  if (body === undefined) return NextResponse.json({ error: 'Request body must be JSON' }, { status: 400 });
   const result = pushOrder(body);
   return NextResponse.json(result.body, { status: result.status });
 }

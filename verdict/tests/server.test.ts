@@ -59,6 +59,23 @@ describe('商家是否同意退款', () => {
       expect(repo.textAgreesToRefund(text), text).toBe(false);
     }
   });
+
+  it('问句、带前提和部分退款都不算答应', () => {
+    for (const text of [
+      '请问您是否同意部分退款？',
+      '商品寄回验货后才能同意退款',
+      '我们同意退货退款，请先寄回',
+      '请确认 PayPal 是否已退款给您',
+      '您看同意退款可以吗',
+      '如果照片属实，我们同意退款',
+      '收到退回的商品后同意退款',
+    ]) {
+      expect(repo.textAgreesToRefund(text), text).toBe(false);
+    }
+    for (const text of ['好的，已为您全额退款，请查收。', '核实过了。我们同意退款。', '请问还有其他问题吗？我们已为您退款。']) {
+      expect(repo.textAgreesToRefund(text), text).toBe(true);
+    }
+  });
 });
 
 describe('动作执行器', () => {
@@ -68,7 +85,7 @@ describe('动作执行器', () => {
     for (const type of ['refund', 'accept_claim', 'make_offer'] as const) {
       const res = await actions.executeAction(req(d, { type, payload: { amount: 1, notes: '说明', message: '您好' } }));
       expect(res.status).toBe(409);
-      expect(String(res.body.error)).toContain('证据不足');
+      expect(String(res.body.error)).toContain('Insufficient evidence');
     }
     expect(repo.claimActions(d.claim.id)).toHaveLength(0);
     expect(repo.getClaim(d.claim.id)!.status).not.toBe('closed');
@@ -84,7 +101,7 @@ describe('动作执行器', () => {
   it('中风险即使建议写成全额退款也不放行；和解和已同意的退款仍然可以', () => {
     expect(
       actions.payoutBlockedByVerdict({ level: 'medium', suggestedAction: 'refund', alreadyAgreed: false }, { type: 'refund' }),
-    ).toMatch(/中风险或高风险/);
+    ).toMatch(/Medium or High risk/);
     expect(actions.payoutBlockedByVerdict({ level: 'medium', suggestedAction: 'make_offer' }, { type: 'make_offer' })).toBeNull();
     expect(
       actions.payoutBlockedByVerdict({ level: 'high', suggestedAction: 'none', identityRefund: true }, { type: 'accept_claim' }),
@@ -95,12 +112,33 @@ describe('动作执行器', () => {
     expect(actions.payoutBlockedByVerdict({ level: 'low', suggestedAction: 'accept_claim' }, { type: 'accept_claim' })).toBeNull();
   });
 
+  it('命中硬规则时，商家答应过退款也不再豁免中高风险限制', () => {
+    expect(
+      actions.payoutBlockedByVerdict({ level: 'high', suggestedAction: 'send_message', alreadyAgreed: true, hardRule: true }, { type: 'accept_claim' }),
+    ).toMatch(/Medium or High risk/);
+    expect(actions.identityRefundAllowed({})).toBe(false);
+    expect(actions.identityRefundAllowed({ identityRefund: true })).toBe(true);
+  });
+
+  it('按旧版规则算的判定不能动钱，重新分析后才放行', async () => {
+    const { RULES_VERSION } = await import('@/core/catalog');
+    const low = { level: 'low', suggestedAction: 'refund' };
+    expect(actions.payoutBlockedByVerdict({ ...low, rulesVersion: 'mvp-2026-11-04' }, { type: 'refund' })).toMatch(/old rules/);
+    expect(actions.payoutBlockedByVerdict({ ...low, rulesVersion: null }, { type: 'refund' })).toMatch(/old rules/);
+    expect(
+      actions.payoutBlockedByVerdict({ level: 'medium', suggestedAction: 'make_offer', rulesVersion: 'mvp-2026-11-04' }, { type: 'make_offer' }),
+    ).toMatch(/old rules/);
+    expect(actions.payoutBlockedByVerdict({ ...low, rulesVersion: RULES_VERSION }, { type: 'refund' })).toBeNull();
+    // 发消息、交证据不受影响。
+    expect(actions.payoutBlockedByVerdict({ ...low, rulesVersion: 'mvp-2026-11-04' }, { type: 'send_message' })).toBeNull();
+  });
+
   it('中风险和高风险不能改走全额退款；建议本身是和解时仍可和解', async () => {
     const medium = claimByScenario('narrative_conflict');
     expect(medium.verdict!.report.level).toBe('medium');
     const refund = await actions.executeAction(req(medium, { type: 'refund', payload: { amount: 1, notes: '说明' } }));
     expect(refund.status).toBe(409);
-    expect(String(refund.body.error)).toContain('中风险或高风险');
+    expect(String(refund.body.error)).toContain('Medium or High risk');
     expect(repo.claimActions(medium.claim.id)).toHaveLength(0);
 
     const high = claimByScenario('fake_chat');
@@ -119,7 +157,7 @@ describe('动作执行器', () => {
     expect(delivered.verdict!.report.primaryAction.type).not.toBe('make_offer');
     const returned = await actions.executeAction(req(delivered, { type: 'make_offer', payload: { amount: 10, notes: '请先寄回', withReturn: true } }));
     expect(returned.status).toBe(409);
-    expect(String(returned.body.error)).toContain('不会执行');
+    expect(String(returned.body.error)).toContain('will not run');
     expect(repo.claimActions(delivered.claim.id)).toHaveLength(0);
 
     const { claimView } = await import('@/server/views');
@@ -169,14 +207,14 @@ describe('动作执行器', () => {
     const sent = res.body.response as { offer_type: string; return_shipping_address: unknown };
     expect(sent.offer_type).toBe('REFUND_WITH_RETURN');
     expect(sent.return_shipping_address).toEqual(repo.DEMO_RETURN_ADDRESS);
-    expect(repo.claimTimeline(d.claim.id).some((t) => t.title === '商家提出退货退款')).toBe(true);
+    expect(repo.claimTimeline(d.claim.id).some((t) => t.title === 'Merchant offered refund with return')).toBe(true);
 
     // 没有争议、建议也不是和解时，退货和解不会执行。
     const portal = claimByScenario('genuine_damage');
     expect(portal.claim.disputeId).toBeFalsy();
     const bad = await actions.executeAction(req(portal, { type: 'make_offer', payload: { amount: 1, notes: 'x', withReturn: true } }));
     expect(bad.status).toBe(409);
-    expect(String(bad.body.error)).toContain('不会执行');
+    expect(String(bad.body.error)).toContain('will not run');
     expect(repo.claimActions(portal.claim.id)).toHaveLength(0);
 
     // 建议已经是和解、但订单没有争议时，仍然不能要求退货。
@@ -189,16 +227,16 @@ describe('动作执行器', () => {
     report.primaryAction = { ...report.primaryAction, type: previous };
     db.db().prepare(`UPDATE verdicts SET suggested_action = ?, report = ? WHERE id = ?`).run(previous, JSON.stringify(report), verdict.id);
     expect(noDispute.status).toBe(400);
-    expect(String(noDispute.body.error)).toContain('只有 PayPal 争议');
+    expect(String(noDispute.body.error)).toContain('Only an offer in a PayPal dispute');
     expect(repo.claimActions(portal.claim.id)).toHaveLength(0);
   });
 
   it('消息里的占位符替换成一次性索赔页链接，token 可以验证', async () => {
     const d = claimByScenario('insufficient');
-    const res = await actions.executeAction(req(d, { payload: { message: '请通过此链接拍摄：{{索赔页链接}}。' } }));
+    const res = await actions.executeAction(req(d, { payload: { message: '请通过此链接拍摄：{claim_link}。' } }));
     expect(res.status).toBe(200);
     const message = (res.body.response as { message: string }).message;
-    expect(message).not.toContain('{{');
+    expect(message).not.toContain('{claim_link}');
     const token = message.match(/\/c\/([^\s。]+)/)![1];
     const check = tokens.checkPortalToken(token);
     expect(check.ok).toBe(true);

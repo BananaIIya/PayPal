@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   await ready();
-  const auth = authorize(req, { owner: true, ownerReason: '只有店主可以创建沙箱测试订单' });
+  const auth = authorize(req, { owner: true, ownerReason: 'Only the owner can create sandbox test orders' });
   if (auth instanceof NextResponse) return auth;
   const origin = requestOrigin(req);
   const token = req.nextUrl.searchParams.get('token') ?? '';

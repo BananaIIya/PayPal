@@ -75,13 +75,13 @@ export interface DisputeSummary {
 /** PayPal 的原始描述往往只是“请求格式不对”，这里补上联调时确认过的真实原因。 */
 const ISSUE_EXPLAINED: Record<string, string> = {
   EVIDENCE_TYPE_IS_NOT_ALLOWED:
-    '这个证据类型现在不能提交。沙箱里确认过的原因是同一类型已经提交过（比如 INQUIRY 阶段交过物流证据），换成 OTHER 并把物流单号写进说明即可。',
+    'This evidence type cannot be submitted now. In the sandbox, the confirmed cause is that the same type was already submitted (for example, fulfillment evidence during the INQUIRY stage). Switch to OTHER and put the tracking number in the notes.',
 };
 
 /** 非物流证据不带 tracking_info，物流单号写进说明，避免信息丢失。 */
 export function evidenceNotes(input: EvidenceInput): string {
   if (!input.trackingNumber || input.evidenceType === 'PROOF_OF_FULFILLMENT' || input.notes.includes(input.trackingNumber)) return input.notes;
-  return `${input.notes}\n物流：${[input.carrier, input.trackingNumber].filter(Boolean).join(' ')}`;
+  return `${input.notes}\nTracking: ${[input.carrier, input.trackingNumber].filter(Boolean).join(' ')}`;
 }
 
 function hasLink(links: RawLink[], segment: string): boolean {
@@ -174,7 +174,7 @@ export interface PayPalCaptureState {
 }
 
 export class PayPalSandbox implements PayPalClient {
-  readonly name = 'PayPal 沙箱';
+  readonly name = 'PayPal sandbox';
   private token: { value: string; expiresAt: number; scope: string } | null = null;
   private pendingToken: Promise<{ value: string; expiresAt: number; scope: string }> | null = null;
   private disputeCache = new Map<string, { at: number; view: DisputeView | null }>();
@@ -201,12 +201,12 @@ export class PayPalSandbox implements PayPalClient {
       });
     } catch (e) {
       // 还没有发出业务请求，所以结果是确定的：什么都没发生。
-      throw new PayPalApiError(`无法连接 PayPal 沙箱：${e instanceof Error ? e.message : String(e)}`);
+      throw new PayPalApiError(`Could not connect to the PayPal sandbox: ${e instanceof Error ? e.message : String(e)}`);
     }
     if (res.status === 400 || res.status === 401) {
-      throw new PayPalApiError('PayPal 拒绝了凭据，请检查 PAYPAL_CLIENT_ID 和 PAYPAL_CLIENT_SECRET 是否为沙箱应用的值。', { status: res.status });
+      throw new PayPalApiError('PayPal rejected the credentials. Check that PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are from a sandbox app.', { status: res.status });
     }
-    if (!res.ok) throw new PayPalApiError(`获取 PayPal 令牌失败（HTTP ${res.status}）`, { status: res.status });
+    if (!res.ok) throw new PayPalApiError(`Failed to get a PayPal token (HTTP ${res.status})`, { status: res.status });
     const body = (await res.json()) as { access_token: string; expires_in: number; scope?: string };
     return {
       value: body.access_token,
@@ -251,7 +251,7 @@ export class PayPalSandbox implements PayPalClient {
       } catch (e) {
         attemptsLeft -= 1;
         if (attemptsLeft > 0) continue;
-        throw new PayPalApiError(`PayPal 没有响应：${e instanceof Error ? e.message : String(e)}`, { indeterminate: method !== 'GET' });
+        throw new PayPalApiError(`PayPal did not respond: ${e instanceof Error ? e.message : String(e)}`, { indeterminate: method !== 'GET' });
       }
 
       // 401 说明请求没被处理，换个令牌重发是安全的。
@@ -267,7 +267,7 @@ export class PayPalSandbox implements PayPalClient {
       } catch (e) {
         // 请求可能已经被 PayPal 处理。非查询、且状态不是明确的 4xx 时，不能当成普通失败去重试。
         const indeterminate = method !== 'GET' && (res.ok || res.status >= 500);
-        throw new PayPalApiError(`PayPal 已响应（HTTP ${res.status}），但读取正文失败：${e instanceof Error ? e.message : String(e)}`, {
+        throw new PayPalApiError(`PayPal responded (HTTP ${res.status}), but reading the body failed: ${e instanceof Error ? e.message : String(e)}`, {
           status: res.status,
           indeterminate,
         });
@@ -277,7 +277,7 @@ export class PayPalSandbox implements PayPalClient {
         try {
           return JSON.parse(text) as T;
         } catch {
-          throw new PayPalApiError(`PayPal 已响应（HTTP ${res.status}），但正文不是有效的 JSON`, {
+          throw new PayPalApiError(`PayPal responded (HTTP ${res.status}), but the body is not valid JSON`, {
             status: res.status,
             indeterminate: method !== 'GET',
           });
@@ -302,9 +302,9 @@ export class PayPalSandbox implements PayPalClient {
     const detail = parsed.details?.[0];
     const issue = detail?.issue ?? parsed.name ?? null;
     const description = detail?.description ?? parsed.message ?? `HTTP ${status}`;
-    const debug = parsed.debug_id ? `（debug_id ${parsed.debug_id}）` : '';
+    const debug = parsed.debug_id ? ` (debug_id ${parsed.debug_id})` : '';
     const explained = issue ? ISSUE_EXPLAINED[issue] : undefined;
-    return new PayPalApiError(`PayPal 返回错误 ${issue ?? status}：${explained ?? description}${debug}`, {
+    return new PayPalApiError(`PayPal returned error ${issue ?? status}: ${explained ?? description}${debug}`, {
       status,
       issue,
       debugId: parsed.debug_id ?? null,
@@ -343,24 +343,24 @@ export class PayPalSandbox implements PayPalClient {
   async checkConnection() {
     const checks: { name: string; ok: boolean; detail: string }[] = [];
     await this.accessToken();
-    checks.push({ name: '凭据', ok: true, detail: 'PayPal 沙箱接受了这组 Client ID 和 Secret' });
+    checks.push({ name: 'Credentials', ok: true, detail: 'The PayPal sandbox accepted this Client ID and Secret' });
 
     const scopes = this.token?.scope.split(' ') ?? [];
     const missing = REQUIRED_SCOPES.filter((s) => !scopes.includes(s));
     checks.push({
-      name: '应用权限',
+      name: 'App permissions',
       ok: missing.length === 0,
       detail:
         missing.length === 0
-          ? '已包含争议读写和退款权限'
-          : `缺少 ${missing.map((s) => s.split('/services/')[1]).join('、')}。请在应用的 Features 里确认已启用 Customer disputes`,
+          ? 'Includes dispute read/write and refund permissions'
+          : `Missing ${missing.map((s) => s.split('/services/')[1]).join(', ')}. In the app's Features, make sure Customer disputes is enabled`,
     });
 
     try {
       const { items } = await this.listDisputes({ page: 1, pageSize: 1 });
-      checks.push({ name: '争议接口', ok: true, detail: items.length ? '可以读取争议列表' : '可以读取争议列表（目前没有争议）' });
+      checks.push({ name: 'Disputes API', ok: true, detail: items.length ? 'Can read the dispute list' : 'Can read the dispute list (no disputes yet)' });
     } catch (e) {
-      checks.push({ name: '争议接口', ok: false, detail: e instanceof Error ? e.message : String(e) });
+      checks.push({ name: 'Disputes API', ok: false, detail: e instanceof Error ? e.message : String(e) });
     }
 
     if (this.webhookId) {
@@ -376,13 +376,13 @@ export class PayPalSandbox implements PayPalClient {
         checks.push({
           name: 'Webhook',
           ok: lacking.length === 0,
-          detail: lacking.length === 0 ? `已订阅争议事件，回调地址 ${hook.url}` : `回调地址 ${hook.url}，还没有订阅 ${lacking.join('、')}`,
+          detail: lacking.length === 0 ? `Subscribed to dispute events, callback URL ${hook.url}` : `Callback URL ${hook.url}, not yet subscribed to ${lacking.join(', ')}`,
         });
       } catch (e) {
         checks.push({ name: 'Webhook', ok: false, detail: e instanceof Error ? e.message : String(e) });
       }
     } else {
-      checks.push({ name: 'Webhook', ok: true, detail: '未配置 PAYPAL_WEBHOOK_ID，只靠定时同步拉取争议（本地开发足够）' });
+      checks.push({ name: 'Webhook', ok: true, detail: 'PAYPAL_WEBHOOK_ID is not set; disputes are pulled by scheduled sync only (enough for local development)' });
     }
     return checks;
   }
@@ -443,8 +443,8 @@ export class PayPalSandbox implements PayPalClient {
     const offerType = input.returnAddress ? 'REFUND_WITH_RETURN' : 'REFUND';
     // PayPal 没给这个和解类型时不要猜，告诉商家这笔争议能用哪些。
     if (types.length > 0 && !types.includes(offerType)) {
-      const hint = types.includes('REFUND_WITH_RETURN') ? '勾选“要求买家先退货”后再提交' : '请到 PayPal 后台处理';
-      throw new PayPalApiError(`这笔争议只接受 ${types.join('、')} 类型的和解，${hint}。`);
+      const hint = types.includes('REFUND_WITH_RETURN') ? 'Check "Require buyer to return the item first" and submit again' : 'Handle it in the PayPal dashboard';
+      throw new PayPalApiError(`This dispute only accepts ${types.join(', ')} offers. ${hint}.`);
     }
     const op = `POST /v1/customer/disputes/${disputeId}/make-offer`;
     await this.request('POST', `/v1/customer/disputes/${encodeURIComponent(disputeId)}/make-offer`, {
@@ -495,9 +495,9 @@ export class PayPalSandbox implements PayPalClient {
       return this.written(op, requestId, { refund_id: body.id, status: 'PENDING', pending: true, amount: input });
     }
     if (body.status === 'FAILED' || body.status === 'CANCELLED') {
-      throw new PayPalApiError(`PayPal 退款状态为 ${body.status}，资金没有退回。`);
+      throw new PayPalApiError(`PayPal refund status is ${body.status}. No funds were returned.`);
     }
-    throw new PayPalApiError(`PayPal 退款状态不明（${body.status ?? '空'}），请先核对后台，不要重复退款。`, { indeterminate: true });
+    throw new PayPalApiError(`PayPal refund status is unknown (${body.status ?? 'empty'}). Check the PayPal dashboard first and do not refund again.`, { indeterminate: true });
   }
 
   async getRefund(refundId: string): Promise<{ id?: string; status?: string }> {
@@ -558,9 +558,9 @@ export class PayPalSandbox implements PayPalClient {
       safeToRetry: true,
     });
     const approve = body.links?.find((l) => l.rel === 'payer-action' || l.rel === 'approve')?.href;
-    if (!approve) throw new PayPalApiError('PayPal 没有返回买家付款链接。');
+    if (!approve) throw new PayPalApiError('PayPal did not return a buyer payment link.');
     if (new URL(approve).hostname !== new URL(SANDBOX_WEB_BASE).hostname) {
-      throw new PayPalApiError(`PayPal 返回的付款链接不是沙箱地址：${new URL(approve).hostname}`);
+      throw new PayPalApiError(`The payment link PayPal returned is not a sandbox URL: ${new URL(approve).hostname}`);
     }
     return { id: body.id, approveUrl: approve };
   }
@@ -580,9 +580,9 @@ export class PayPalSandbox implements PayPalClient {
     });
     const unit = body.purchase_units?.[0];
     const capture = unit?.payments?.captures?.[0];
-    if (!capture?.id) throw new PayPalApiError('PayPal 的捕获响应里没有交易 ID。');
+    if (!capture?.id) throw new PayPalApiError('The PayPal capture response has no transaction ID.');
     if (capture.status === 'DECLINED' || capture.status === 'FAILED') {
-      throw new PayPalApiError(`付款没有成功，PayPal 状态为 ${capture.status}。`);
+      throw new PayPalApiError(`Payment did not succeed. PayPal status is ${capture.status}.`);
     }
     const name = [body.payer?.name?.given_name, body.payer?.name?.surname].filter(Boolean).join(' ') || null;
     const address = unit?.shipping?.address;

@@ -74,7 +74,7 @@ describe('影子模式', () => {
     expect(v.actionOptions.map((o) => o.type)).not.toContain('accept_claim');
     expect(v.actionOptions.map((o) => o.type)).not.toContain('refund');
     for (const o of v.actionOptions) {
-      expect(o.reason).toContain('影子模式');
+      expect(o.reason).toContain('Shadow mode');
       expect(o.attachReport).toBeFalsy();
       expect(o.attachEvidence).toBeFalsy();
     }
@@ -82,7 +82,7 @@ describe('影子模式', () => {
     expect(v.actionOptions.every((o) => o.type !== 'none' && v.allowedActions.includes(o.type))).toBe(true);
     // 序列化后的视图里不能出现判定的痕迹。
     const text = JSON.stringify(v);
-    for (const leak of ['AI_PROVENANCE_FOUND', '高风险', 'contradicts_claim', 'primaryAction']) expect(text).not.toContain(leak);
+    for (const leak of ['AI_PROVENANCE_FOUND', 'High risk', '高风险', 'contradicts_claim', 'primaryAction']) expect(text).not.toContain(leak);
   });
 
   it('列表不显示等级、分数和演示场景标题', () => {

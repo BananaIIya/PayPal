@@ -20,8 +20,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
   const check = requireToken(token);
   if (check instanceof NextResponse) return check;
   const claim = getClaim(check.payload.claimId);
-  if (!claim) return NextResponse.json({ error: '索赔不存在' }, { status: 404 });
-  if (claim.status === 'closed') return NextResponse.json({ error: '这笔索赔已结案' }, { status: 409 });
+  if (!claim) return NextResponse.json({ error: 'Claim not found' }, { status: 404 });
+  if (claim.status === 'closed') return NextResponse.json({ error: 'This claim is closed' }, { status: 409 });
 
   const body = await req.json().catch(() => ({}));
   const narrative = String(body.narrative ?? '').slice(0, 5000);
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
     .prepare('UPDATE claims SET claim_type = ?, narrative = ?, status = ? WHERE id = ?')
     .run(claim.origin === 'portal' ? type : claim.claim_type, narrative || claim.narrative, 'analyzing', claim.id);
   consumePortalToken(check.payload.jti);
-  addTimeline(claim.id, 'claim', '买家提交索赔', narrative ? narrative.slice(0, 80) : undefined);
+  addTimeline(claim.id, 'claim', 'Buyer submitted claim', narrative ? narrative.slice(0, 80) : undefined);
   startAnalysis(claim.id);
   return NextResponse.json({ ok: true });
 }

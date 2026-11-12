@@ -19,13 +19,12 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
     <>
       <div className="page-head">
         <div>
-          <h1>订单与留底</h1>
-          <p className="muted">发货前留底是 Reference 和 Logistics 的比对基准。从这里也可以生成买家索赔链接。</p>
+          <h1>Orders &amp; references</h1>
         </div>
       </div>
       {paypalError && (
         <p className="notice notice-danger" style={{ marginBottom: 14 }}>
-          PayPal 付款没有完成：{paypalError}
+          PayPal payment was not completed: {paypalError}
         </p>
       )}
       {sandboxReady && viewer.role === 'owner' && <TestOrderForm products={TEST_PRODUCTS.map((p) => ({ key: p.key, title: p.title, amount: p.amount }))} />}
@@ -33,14 +32,14 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
         <table className="data">
           <thead>
             <tr>
-              <th>订单</th>
-              <th>商品</th>
-              <th>金额</th>
-              <th>买家</th>
-              <th>物流单号</th>
-              <th>发货称重</th>
-              <th>留底</th>
-              <th>索赔</th>
+              <th>Order</th>
+              <th>Item</th>
+              <th>Amount</th>
+              <th>Buyer</th>
+              <th>Tracking number</th>
+              <th>Shipping weight</th>
+              <th>References</th>
+              <th>Claims</th>
             </tr>
           </thead>
           <tbody>
@@ -52,7 +51,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                   </Link>
                   {o.paypalEnv === 'sandbox' && (
                     <span className="badge badge-warn" style={{ marginLeft: 6 }}>
-                      {o.paid ? '沙箱' : '沙箱 · 未付款'}
+                      {o.paid ? 'Sandbox' : 'Sandbox · Unpaid'}
                     </span>
                   )}
                 </td>

@@ -62,10 +62,10 @@ export const verifyWithPayPal: Verifier = async (clientId, clientSecret) => {
       signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {
-    return { ok: false, status: 502, error: `连不上 PayPal 沙箱，凭证没有保存：${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, status: 502, error: `Could not reach the PayPal sandbox; credentials were not saved: ${e instanceof Error ? e.message : String(e)}` };
   }
-  if (res.status === 400 || res.status === 401) return { ok: false, status: 400, error: 'PayPal 拒绝了这组凭证。请确认是沙箱应用（Sandbox）的 Client ID 和 Secret。' };
-  if (!res.ok) return { ok: false, status: 502, error: `PayPal 沙箱返回 HTTP ${res.status}，凭证没有保存，请稍后再试` };
+  if (res.status === 400 || res.status === 401) return { ok: false, status: 400, error: 'PayPal rejected these credentials. Make sure they are the Client ID and Secret of a Sandbox app.' };
+  if (!res.ok) return { ok: false, status: 502, error: `PayPal sandbox returned HTTP ${res.status}; credentials were not saved. Try again later.` };
   return { ok: true };
 };
 
@@ -75,13 +75,13 @@ export async function savePayPalCredentials(
   verify: Verifier = verifyWithPayPal,
 ): Promise<{ ok: true; view: PayPalCredentialView } | { ok: false; status: number; error: string }> {
   const enc = encryptionKeyState();
-  if (!enc.configured) return { ok: false, status: 400, error: enc.error ?? '服务端没有配置 APP_ENCRYPTION_KEY，不能保存凭证。' };
+  if (!enc.configured) return { ok: false, status: 400, error: enc.error ?? 'APP_ENCRYPTION_KEY is not configured on the server, so credentials cannot be saved.' };
   const clientId = typeof input.clientId === 'string' ? input.clientId.trim() : '';
   const clientSecret = typeof input.clientSecret === 'string' ? input.clientSecret.trim() : '';
   const webhookId = typeof input.webhookId === 'string' && input.webhookId.trim() ? input.webhookId.trim() : null;
-  if (!CREDENTIAL.test(clientId)) return { ok: false, status: 400, error: 'Client ID 格式不对' };
-  if (!CREDENTIAL.test(clientSecret)) return { ok: false, status: 400, error: 'Secret 格式不对' };
-  if (webhookId && !WEBHOOK_ID.test(webhookId)) return { ok: false, status: 400, error: 'Webhook ID 格式不对' };
+  if (!CREDENTIAL.test(clientId)) return { ok: false, status: 400, error: 'Invalid Client ID format' };
+  if (!CREDENTIAL.test(clientSecret)) return { ok: false, status: 400, error: 'Invalid Secret format' };
+  if (webhookId && !WEBHOOK_ID.test(webhookId)) return { ok: false, status: 400, error: 'Invalid Webhook ID format' };
 
   const checked = await verify(clientId, clientSecret);
   if (!checked.ok) return checked;

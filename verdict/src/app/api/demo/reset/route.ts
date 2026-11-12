@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   await ready();
-  const auth = authorize(req, { write: true, owner: true, ownerReason: '只有店主可以重置演示数据' });
+  const auth = authorize(req, { write: true, owner: true, ownerReason: 'Only the owner can reset demo data' });
   if (auth instanceof NextResponse) return auth;
   await resetDemo();
   return NextResponse.json({ ok: true });

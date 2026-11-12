@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ANALYZER_LABEL,
   CLAIM_TYPE_LABEL,
+  DEFAULT_CONFIG,
   describeConfig,
   LEVEL_LABEL,
   ORIGIN_LABEL,
@@ -21,13 +22,15 @@ import { ActionPanel } from './ActionPanel';
 import { DeleteClaim } from './DeleteClaim';
 import { SandboxTools } from './SandboxTools';
 import { dueLabel, fmtDateTime, fmtMoney } from './format';
+import { RiskMeter, ScoreBar } from './RiskMeter';
 
-const STATUS_TEXT: Record<PropositionResult['status'], string> = { holds: '成立', refuted: '不成立', insufficient: '证据不足' };
-const RUN_TEXT: Record<RunStatus, string> = { queued: '排队', running: '运行中', done: '完成', unavailable: '未执行', failed: '失败' };
+const STATUS_TEXT: Record<PropositionResult['status'], string> = { holds: 'Holds', refuted: 'Refuted', insufficient: 'Insufficient' };
+const DIRECTION_TEXT = { contradicts_claim: 'Contradicts claim', supports_claim: 'Supports claim', neutral: 'Neutral' } as const;
+const RUN_TEXT: Record<RunStatus, string> = { queued: 'Queued', running: 'Running', done: 'Done', unavailable: 'Not run', failed: 'Failed' };
 
 function providerText(p?: string) {
   if (!p) return null;
-  if (p === 'recorded-fixture') return '录制回放';
+  if (p === 'recorded-fixture') return 'Recorded replay';
   return p;
 }
 
@@ -54,6 +57,8 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
 
   const selected = allEvidence.find((e) => e.id === selectedId) ?? null;
   const report = data.verdict?.report ?? null;
+  // 早期存档的判定没有记录当时的阈值，按默认值画刻度。
+  const cfg = report?.config ?? DEFAULT_CONFIG;
   const signalById = useMemo(() => new Map(data.signals.map((s) => [s.id, s])), [data.signals]);
   const analyzing = data.runs.some((r) => r.status === 'queued' || r.status === 'running');
   const due = dueLabel(data.claim.dueAt);
@@ -61,11 +66,11 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
   const purged = data.evidence.some((e) => e.purgedAt);
   const deleteBlocked =
     data.claim.disputeId && data.claim.status !== 'closed'
-      ? 'PayPal 争议还没结案，结案后才能删除，否则就不能在 Verdict 里回应这笔争议了。'
+      ? 'The PayPal dispute is still open. You can delete after it closes; otherwise you could no longer respond to it in Verdict.'
       : data.actions.some((a) => a.status === 'pending' || a.status === 'unknown' || a.status === 'processing')
-        ? '有退款处理中、结果不明或还在执行的动作，请先在动作记录里对账。'
+        ? 'There are actions with a refund in progress, an unknown result or still running. Reconcile them in the action history first.'
         : analyzing
-          ? '分析还在进行，请稍后再删除。'
+          ? 'Analysis is still running. Delete later.'
           : null;
 
   function selectFinding(f: Finding) {
@@ -86,77 +91,83 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
 
   return (
     <>
-      <div className="page-head">
-        <div>
-          <p className="small">
-            <Link href="/claims">← 索赔列表</Link>
-          </p>
-          <h1>
-            {data.order.orderNo} · {item?.title}
-            {item && item.quantity > 1 ? ` ×${item.quantity}` : ''}
-          </h1>
-          <div className="row" style={{ marginTop: 6 }}>
-            <span className="badge">{CLAIM_TYPE_LABEL[data.claim.type]}</span>
-            <span className="badge">{ORIGIN_LABEL[data.claim.origin]}</span>
-            <span className="badge">{STATUS_LABEL[data.claim.status]}</span>
-            {data.paypal.env === 'sandbox' && <span className="badge badge-warn">PayPal 沙箱</span>}
-            {data.paypal.status && (
-              <span className="badge mono">
-                {data.paypal.status} · {data.paypal.stage}
-              </span>
-            )}
-            <span className="muted num">{fmtMoney(data.order.amount, data.order.currency)}</span>
-            {data.claim.dueAt && (
-              <span className={due.soon ? 'due-soon' : 'muted'} suppressHydrationWarning>
-                PayPal 截止：{due.text}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="row no-print">
-          <button
-            className="btn"
-            onClick={reanalyze}
-            disabled={reanalyzing || analyzing || purged}
-            title={purged ? '证据原件已按保留期删除，不能重新分析' : undefined}
-          >
-            {analyzing ? '分析中…' : '重新分析'}
-          </button>
-          <Link className="btn" href={`/orders/${data.order.id}`}>
-            订单与留底
-          </Link>
-          {report && (
-            <Link className="btn" href={`/claims/${id}/report`}>
-              核验报告
-            </Link>
-          )}
-        </div>
-      </div>
-
-      {scenario && (
-        <div className="scenario">
-          <strong>演示场景：{scenario.title}。</strong> {scenario.story} <strong>文档期望：</strong>
-          {scenario.expected}。
-        </div>
-      )}
-      {data.paypal.captureWarning && (
-        <p className="notice" style={{ marginBottom: 14 }}>
-          {data.paypal.captureWarning}
-        </p>
-      )}
-      {data.paypal.error && (
-        <div className="notice notice-danger" style={{ marginBottom: 14 }}>
-          暂时读取不到 PayPal 上这笔争议的状态，动作已暂停：{data.paypal.error}
-        </div>
-      )}
-      {showDeadlineWarning && (
-        <div className="notice notice-danger" style={{ marginBottom: 14 }}>
-          PayPal 响应截止临近，仍有检查未完成。下面的判定只基于已完成的信号。
-        </div>
-      )}
-
       <div className="detail-grid">
         <div className="main-col">
+          {/* 页头放在左栏里：右侧判定栏从页面顶部开始，一屏内就能看到判定和动作按钮。 */}
+          <div className="detail-head">
+            <div className="page-head">
+              <div>
+                <p className="crumb">
+                  <Link href="/claims">Claims</Link> / {scenario?.title ?? data.order.orderNo}
+                </p>
+                <h1>
+                  {data.order.orderNo} · {item?.title}
+                  {item && item.quantity > 1 ? ` ×${item.quantity}` : ''}
+                </h1>
+                <div className="case-meta">
+                  <span className="badge">{CLAIM_TYPE_LABEL[data.claim.type]}</span>
+                  <span className="badge">{ORIGIN_LABEL[data.claim.origin]}</span>
+                  <span className="badge">{STATUS_LABEL[data.claim.status]}</span>
+                  {data.paypal.env === 'sandbox' && <span className="badge badge-warn">PayPal sandbox</span>}
+                  {data.paypal.status && (
+                    <span className="badge mono">
+                      {data.paypal.status} · {data.paypal.stage}
+                    </span>
+                  )}
+                  <span className="amount">{fmtMoney(data.order.amount, data.order.currency)}</span>
+                  {data.claim.dueAt && (
+                    <span className={due.soon ? 'due-soon' : 'muted'} suppressHydrationWarning>
+                      PayPal due: {due.text}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="row no-print">
+                <button
+                  className="btn"
+                  onClick={reanalyze}
+                  disabled={reanalyzing || analyzing || purged}
+                  title={purged ? 'Original evidence was deleted per the retention period and cannot be reanalyzed' : undefined}
+                >
+                  {analyzing ? 'Analyzing…' : 'Reanalyze'}
+                </button>
+                <Link className="btn" href={`/orders/${data.order.id}`}>
+                  Orders & references
+                </Link>
+                {report && (
+                  <Link className="btn" href={`/claims/${id}/report`}>
+                    Verification report
+                  </Link>
+                )}
+              </div>
+            </div>
+
+            {scenario && (
+              <div className="scenario">
+                <span className="badge badge-sim">Demo case</span>
+                <span>
+                  <strong>{scenario.title}.</strong> {scenario.story} <strong>Expected:</strong>{' '}
+                  {scenario.expected}.
+                </span>
+              </div>
+            )}
+            {data.paypal.captureWarning && (
+              <p className="notice" style={{ marginBottom: 14 }}>
+                {data.paypal.captureWarning}
+              </p>
+            )}
+            {data.paypal.error && (
+              <div className="notice notice-danger" style={{ marginBottom: 14 }}>
+                Can't read the status of this PayPal dispute right now. Actions are paused: {data.paypal.error}
+              </div>
+            )}
+            {showDeadlineWarning && (
+              <div className="notice notice-danger" style={{ marginBottom: 14 }}>
+                The PayPal response deadline is close and some checks are still incomplete. The verdict below is based only on completed signals.
+              </div>
+            )}
+
+          </div>
           <Gallery
             evidence={data.evidence}
             references={data.references}
@@ -171,8 +182,10 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
 
           {report && (
             <section className="card card-pad">
-              <h2>发现（{report.findings.length}）</h2>
-              {report.findings.length === 0 && <p className="muted">已完成的分析器没有产生信号。</p>}
+              <h2>
+                Findings ({report.findings.length})
+              </h2>
+              {report.findings.length === 0 && <p className="muted">The completed analyzers produced no signals.</p>}
               {report.findings.map((f) => (
                 <button
                   key={f.signalIds[0]}
@@ -181,17 +194,22 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
                 >
                   <div className="finding-head">
                     <strong>{f.title}</strong>
-                    {f.hardRule && <span className="badge level-high">硬规则</span>}
-                    <span className="badge">{f.direction === 'contradicts_claim' ? '反驳索赔' : f.direction === 'supports_claim' ? '支持索赔' : '中性'}</span>
-                    <span className="badge">强度 {STRENGTH_LABEL[f.strength]}</span>
+                    {f.hardRule && <span className="badge level-high">Hard rule</span>}
+                    <span className={`badge dir-${f.direction}`}>{DIRECTION_TEXT[f.direction]}</span>
+                    <span className="badge">Strength: {STRENGTH_LABEL[f.strength]}</span>
                     <span className="muted small">{ANALYZER_LABEL[f.analyzer].name}</span>
                     {providerText(f.provider) && <span className="badge badge-sim">{providerText(f.provider)}</span>}
+                    {f.contribution !== 0 && (
+                      <span className={`finding-contrib ${f.contribution > 0 ? 'contrib-pos' : 'contrib-neg'}`} title="This finding's contribution to R">
+                        {f.contribution > 0 ? `+${f.contribution.toFixed(2)}` : f.contribution.toFixed(2)}
+                      </span>
+                    )}
                   </div>
                   <div>{f.explanation}</div>
-                  <ReuseComparison raw={signalById.get(f.signalIds[0])?.raw} />
+                  <ReuseComparison raw={signalById.get(f.signalIds[0])?.raw} currentId={f.region?.evidenceId ?? f.evidenceIds[0]} currentOrder={data.order.orderNo} />
                   {f.normalExplanations.length > 0 && (
                     <div className="explain">
-                      需排除的正常解释：
+                      Innocent explanations to rule out:
                       <ul>
                         {f.normalExplanations.map((n) => (
                           <li key={n}>{n}</li>
@@ -206,7 +224,9 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
 
           {report && (
             <section className="card card-pad">
-              <h2>命题核验</h2>
+              <h2>
+                Checks
+              </h2>
               {report.propositions.map((p) => {
                 const signals = [...p.supportingSignalIds, ...p.refutingSignalIds].map((sid) => signalById.get(sid)?.code).filter(Boolean);
                 return (
@@ -216,18 +236,18 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
                     </span>
                     <div>
                       {p.label}
-                      {p.key && <span className="muted small">（关键）</span>}
+                      {p.key && <span className="muted small"> (key)</span>}
                       {(p.note || signals.length > 0) && (
                         <div className="muted small">
                           {p.note}
                           {p.note && signals.length > 0 ? ' · ' : ''}
-                          {signals.join('、')}
+                          {signals.join(', ')}
                         </div>
                       )}
                     </div>
                     <div className="row">
                       {p.layers.map((l) => (
-                        <span key={l} className={`tier tier-${l}`} title={`${l} 层证据`}>
+                        <span key={l} className={`tier tier-${l}`} title={`Evidence tier ${l}`}>
                           {l}
                         </span>
                       ))}
@@ -239,12 +259,16 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
           )}
 
           <section className="card card-pad">
-            <h2>买家陈述</h2>
-            <p style={{ whiteSpace: 'pre-wrap' }}>{data.claim.narrative || <span className="muted">买家还没有填写。</span>}</p>
+            <h2>
+              Buyer statement
+            </h2>
+            <p style={{ whiteSpace: 'pre-wrap' }}>{data.claim.narrative || <span className="muted">The buyer hasn't filled this in yet.</span>}</p>
           </section>
 
           <section className="card card-pad">
-            <h2>时间线</h2>
+            <h2>
+              Timeline
+            </h2>
             <ol className="timeline">
               {data.timeline.map((t, i) => (
                 <li key={`${t.at}-${i}`}>
@@ -261,24 +285,24 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
           {report && (
             <section className="card card-pad">
               <details className="audit">
-                <summary>审计记录</summary>
+                <summary>Audit trail</summary>
                 <p className="muted small" style={{ marginTop: 8 }}>
-                  规则版本 {report.rulesVersion} · 判定 ID {data.verdict!.id}
+                  Rules version {report.rulesVersion} · Verdict ID {data.verdict!.id}
                 </p>
-                <p className="muted small">权重配置：{describeConfig(report.config)}</p>
-                <h3 style={{ marginTop: 10 }}>规则路径</h3>
+                <p className="muted small">Weight config: {describeConfig(report.config)}</p>
+                <h3 style={{ marginTop: 10 }}>Rule trace</h3>
                 <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
                   {report.ruleTrace.map((t) => (
                     <li key={t}>{t}</li>
                   ))}
                 </ul>
-                <h3 style={{ marginTop: 10 }}>信号原始数据</h3>
+                <h3 style={{ marginTop: 10 }}>Raw signal data</h3>
                 <pre className="raw">{JSON.stringify(data.signals, null, 2)}</pre>
               </details>
             </section>
           )}
 
-          <DeleteClaim claimId={data.claim.id} blocked={isOwner ? deleteBlocked : '只有店主可以删除索赔数据。'} />
+          <DeleteClaim claimId={data.claim.id} blocked={isOwner ? deleteBlocked : 'Only the owner can delete claim data.'} />
         </div>
 
         <aside className="side">
@@ -286,30 +310,35 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
             <section className="card verdict-card">
               <div className={`verdict-band level-${report.level}`}>
                 <div className="verdict-level">{LEVEL_LABEL[report.level]}</div>
-                <div>{report.headline}</div>
-                <div className="row" style={{ marginTop: 6 }}>
-                  {report.incomplete && <span className="badge badge-warn">核验不完整</span>}
-                  {report.qualityNotice && <span className="badge badge-warn">疑似质量或履约问题</span>}
-                </div>
+                <div className="verdict-headline">{report.headline}</div>
+                {(report.incomplete || report.qualityNotice) && (
+                  <div className="row" style={{ marginTop: 8 }}>
+                    {report.incomplete && <span className="badge badge-warn">Verification incomplete</span>}
+                    {report.qualityNotice && <span className="badge badge-warn">Possible quality or fulfillment issue</span>}
+                  </div>
+                )}
               </div>
-              <div className="scores">
-                <div title="买家侧风险：正值倾向索赔不实">
-                  <b>{report.score.toFixed(2)}</b>
-                  <span>买家风险 R</span>
-                </div>
-                <div title="关键命题中 A、B 层证据覆盖比例 × 分析器完成比例">
-                  <b>{report.dataConfidence.toFixed(2)}</b>
-                  <span>置信度 Q</span>
-                </div>
-                <div title="商品质量或履约问题的可能性">
-                  <b>{report.merchantRisk.toFixed(2)}</b>
-                  <span>商家风险 M</span>
-                </div>
+              <RiskMeter score={report.score} medium={cfg.riskMedium} high={cfg.riskHigh} level={report.level} />
+              <div className="bars">
+                <ScoreBar
+                  label="Confidence Q"
+                  value={report.dataConfidence}
+                  mark={cfg.minDataConfidence}
+                  title="Share of key propositions covered by tier A/B evidence × share of analyzers completed. The line marks the minimum needed for a verdict"
+                />
+                <ScoreBar
+                  label="Merchant risk M"
+                  value={report.merchantRisk}
+                  mark={cfg.merchantRiskHigh}
+                  title="Likelihood of a product quality or fulfillment issue. The line marks the alert threshold"
+                />
               </div>
               <div className="card-pad">
                 {report.topSignalIds.length > 0 && (
                   <>
-                    <h3 style={{ marginBottom: 4 }}>贡献最大的信号</h3>
+                    <h3 style={{ marginBottom: 4 }}>
+                      Top signals
+                    </h3>
                     {report.topSignalIds.map((sid) => {
                       const f = report.findings.find((x) => x.signalIds.includes(sid));
                       if (!f) return null;
@@ -333,15 +362,17 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
                 )}
                 {report.missingShots.length + report.lowTierShots.length > 0 && (
                   <div style={{ marginTop: 10 }}>
-                    <h3 style={{ marginBottom: 4 }}>充分性清单</h3>
+                    <h3 style={{ marginBottom: 4 }}>
+                      Evidence gaps
+                    </h3>
                     {report.missingShots.map((s) => (
-                      <div key={s} className="small">
-                        ✕ 缺少：{SHOT_LABEL[s] ?? s}
+                      <div key={s} className="check-line check-miss">
+                        <i>✕</i>Missing: {SHOT_LABEL[s] ?? s}
                       </div>
                     ))}
                     {report.lowTierShots.map((s) => (
-                      <div key={s} className="small">
-                        △ 只有相册或导入来源：{SHOT_LABEL[s] ?? s}
+                      <div key={s} className="check-line check-weak">
+                        <i>△</i>Gallery or imported only: {SHOT_LABEL[s] ?? s}
                       </div>
                     ))}
                   </div>
@@ -351,18 +382,25 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
           ) : data.shadow && data.verdict ? (
             <section className="card card-pad">
               <div className="between">
-                <h2>影子模式</h2>
-                <span className="badge badge-sim">判定已隐藏</span>
+                <h2>Shadow mode</h2>
+                <span className="badge badge-sim">Verdict hidden</span>
               </div>
               <p className="muted small">
-                判定已经在后台算好并存档，但不显示给处理人员。请根据证据、订单和买家陈述自己决定；你的决定会和判定对照，店主在“影子对照”页查看一致率。
+                The verdict has been computed and stored in the background but is not shown to the person handling the claim. Decide based on the evidence, order and buyer statement. Your decision is compared with the verdict, and the owner sees the agreement rate on the Shadow mode page.
               </p>
             </section>
           ) : (
             <section className="card card-pad">
-              <h2>等待证据</h2>
-              <p className="muted">买家提交后会自动开始分析。</p>
+              <h2>Waiting for evidence</h2>
+              <p className="muted">Analysis starts automatically once the buyer submits.</p>
             </section>
+          )}
+
+          {data.verdict && data.rulesOutdated && data.claim.status !== 'closed' && (
+            <div className="notice notice-info no-print">
+              <strong>Verdict rules have been updated.</strong>
+              This verdict was computed with the old rules, so refund, accept claim and offer are unavailable for now. Click Reanalyze at the top of the page to recompute with the new rules, then decide.
+            </div>
           )}
 
           {data.verdict && (
@@ -388,7 +426,9 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
 
           {data.runs.length > 0 && (
             <section className="card card-pad">
-              <h2>分析器</h2>
+              <h2>
+                Analyzers
+              </h2>
               {data.runs.map((r) => (
                 <div className="run" key={r.analyzer}>
                   <span className={`dot dot-${r.status}`} />
@@ -409,18 +449,36 @@ export function ClaimView({ initial, viewer }: { initial: ClaimViewData; viewer:
 }
 
 /** 图片复用是硬规则，把被比对的那张图摆出来，商家才能自己判断是不是真的同一张。 */
-function ReuseComparison({ raw }: { raw: unknown }) {
-  const match = raw as { matchedEvidenceId?: string; matchedOrder?: string } | null | undefined;
+function ReuseComparison({ raw, currentId, currentOrder }: { raw: unknown; currentId?: string; currentOrder: string }) {
+  const match = raw as { matchedEvidenceId?: string; matchedOrder?: string; hammingDistance?: number } | null | undefined;
   if (!match?.matchedEvidenceId) return null;
   return (
-    <div className="explain">
-      比对对象（订单 {match.matchedOrder}）：
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={`/api/evidence/${match.matchedEvidenceId}/file`}
-        alt={`订单 ${match.matchedOrder} 的历史证据`}
-        style={{ display: 'block', width: 160, height: 107, objectFit: 'cover', borderRadius: 4, marginTop: 4 }}
-      />
+    <div className="compare">
+      {currentId && (
+        <figure>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={`/api/evidence/${currentId}/file`} alt="Evidence submitted for this claim" loading="lazy" />
+          <figcaption>
+            <b>This claim</b>
+            <span className="mono">{currentOrder}</span>
+          </figcaption>
+        </figure>
+      )}
+      {currentId && (
+        <div className="compare-link">
+          <i aria-hidden="true">≈</i>
+          Same image
+          {typeof match.hammingDistance === 'number' && <span>Difference {match.hammingDistance}/256</span>}
+        </div>
+      )}
+      <figure>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={`/api/evidence/${match.matchedEvidenceId}/file`} alt={`Past evidence from order ${match.matchedOrder}`} loading="lazy" />
+        <figcaption>
+          <b>Past evidence</b>
+          <span className="mono">{match.matchedOrder}</span>
+        </figcaption>
+      </figure>
     </div>
   );
 }
@@ -431,7 +489,7 @@ function framesOf(all: PublicEvidence[], videoId: string): PublicEvidence[] {
 }
 const frameAt = (e: PublicEvidence) => Number(e.captureMeta?.atMs ?? 0);
 const fileUrl = (id: string) => `/api/evidence/${id}/file`;
-const secondsText = (ms: number) => `${(ms / 1000).toFixed(1)} 秒`;
+const secondsText = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 
 interface VideoInfoView {
   frameExtraction: string;
@@ -459,8 +517,8 @@ function Gallery({
   if (evidence.length === 0 && references.length === 0) {
     return (
       <section className="card card-pad">
-        <h2>证据</h2>
-        <p className="muted">这笔索赔没有图片证据，核验依据物流与交易记录。</p>
+        <h2>Evidence</h2>
+        <p className="muted">This claim has no image evidence. Verification relies on shipping and transaction records.</p>
       </section>
     );
   }
@@ -472,20 +530,22 @@ function Gallery({
   const box = highlight && selected && highlight.evidenceId === selected.id ? highlight.bbox : null;
   return (
     <section className="card card-pad">
-      <h2>证据</h2>
+      <h2>
+        Evidence
+      </h2>
       {selected && (
         <div className="gallery-main">
           <div className="gallery-frame">
             {selected.kind === 'video' ? (
               selected.purgedAt ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={fileUrl(selected.id)} alt="原件已删除" />
+                <img src={fileUrl(selected.id)} alt="Original deleted" />
               ) : (
                 <video key={selected.id} src={fileUrl(selected.id)} poster={frames[0] ? fileUrl(frames[0].id) : undefined} controls playsInline preload="metadata" />
               )
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={fileUrl(selected.id)} alt={SHOT_LABEL[selected.shotLabel ?? ''] ?? '证据图片'} />
+              <img src={fileUrl(selected.id)} alt={SHOT_LABEL[selected.shotLabel ?? ''] ?? 'Evidence image'} />
             )}
             {box && (
               <div
@@ -499,13 +559,13 @@ function Gallery({
       {video && frames.length > 0 && (
         <>
           <div className="muted small" style={{ marginTop: 10 }}>
-            抽出的帧（{frames.length}）：按固定间隔加场景切换抽取，其余分析器看的是这些帧
+            Extracted frames ({frames.length}): taken at fixed intervals plus scene changes. The other analyzers look at these frames
           </div>
           <div className="thumbs" style={{ marginTop: 4 }}>
             <button className="thumb" aria-pressed={selected?.id === video.id} onClick={() => onSelect(video.id)}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={fileUrl(frames[0].id)} alt="" loading="lazy" />
-              <span className="thumb-label">▶ 播放视频</span>
+              <span className="thumb-label">▶ Play video</span>
             </button>
             {frames.map((f) => (
               <button key={f.id} className="thumb" aria-pressed={selected?.id === f.id} onClick={() => onSelect(f.id)}>
@@ -513,55 +573,55 @@ function Gallery({
                 <img src={fileUrl(f.id)} alt="" loading="lazy" />
                 <span className="thumb-label">
                   {secondsText(frameAt(f))}
-                  {f.captureMeta?.reason === 'scene' ? ' · 切换' : ''}
+                  {f.captureMeta?.reason === 'scene' ? ' · cut' : ''}
                 </span>
               </button>
             ))}
           </div>
         </>
       )}
-      {top.length > 0 && <Thumbs title={`买家证据（${top.length}）`} items={top} all={evidence} selected={video ?? selected} onSelect={onSelect} />}
-      {references.length > 0 && <Thumbs title={`商家留底（${references.length}）`} items={references} all={references} selected={selected} onSelect={onSelect} />}
+      {top.length > 0 && <Thumbs title={`Buyer evidence (${top.length})`} items={top} all={evidence} selected={video ?? selected} onSelect={onSelect} />}
+      {references.length > 0 && <Thumbs title={`Reference photos (${references.length})`} items={references} all={references} selected={selected} onSelect={onSelect} />}
       {selected && (
         <dl className="meta-grid">
           <div>
-            <dt>镜头</dt>
-            <dd>{SHOT_LABEL[selected.shotLabel ?? ''] ?? selected.shotLabel ?? '未标注'}</dd>
+            <dt>Shot</dt>
+            <dd>{SHOT_LABEL[selected.shotLabel ?? ''] ?? selected.shotLabel ?? 'Unlabeled'}</dd>
           </div>
           <div>
-            <dt>来源</dt>
+            <dt>Source</dt>
             <dd>
               <span className={`tier tier-${selected.layer}`}>{selected.layer}</span> {SOURCE_LABEL[selected.source as SourceMark]}
             </dd>
           </div>
           <div>
-            <dt>上传时间</dt>
+            <dt>Uploaded</dt>
             <dd>{fmtDateTime(selected.createdAt)}</dd>
           </div>
           {selected.kind === 'frame' && (
             <div>
-              <dt>视频帧</dt>
+              <dt>Video frame</dt>
               <dd>
-                第 {secondsText(frameAt(selected))}
-                {selected.captureMeta?.reason === 'scene' ? '（场景切换）' : '（固定间隔）'}
+                At {secondsText(frameAt(selected))}
+                {selected.captureMeta?.reason === 'scene' ? ' (scene change)' : ' (fixed interval)'}
               </dd>
             </div>
           )}
           {info && (
             <div>
-              <dt>视频</dt>
+              <dt>Video</dt>
               <dd>
-                {info.durationMs ? secondsText(info.durationMs) : '时长未知'}
+                {info.durationMs ? secondsText(info.durationMs) : 'Unknown duration'}
                 {info.width && info.height ? ` · ${info.width}×${info.height}` : ''}
-                {info.frameExtraction === 'ok' ? ` · 抽帧 ${info.frames} 张` : ` · 没有抽帧：${info.reason ?? '原因未知'}`}
-                {info.sceneCutsMs.length > 0 ? ` · 场景切换 ${info.sceneCutsMs.map(secondsText).join('、')}` : ''}
+                {info.frameExtraction === 'ok' ? ` · ${info.frames} frames extracted` : ` · No frames extracted: ${info.reason ?? 'unknown reason'}`}
+                {info.sceneCutsMs.length > 0 ? ` · Scene changes ${info.sceneCutsMs.map(secondsText).join(', ')}` : ''}
               </dd>
             </div>
           )}
           {selected.purgedAt && (
             <div>
-              <dt>原件</dt>
-              <dd>{fmtDateTime(selected.purgedAt)} 按保留期删除</dd>
+              <dt>Original</dt>
+              <dd>Deleted {fmtDateTime(selected.purgedAt)} per retention period</dd>
             </div>
           )}
           <div>
@@ -572,7 +632,7 @@ function Gallery({
           </div>
           {selected.challenge && (
             <div>
-              <dt>挑战</dt>
+              <dt>Challenge</dt>
               <dd>
                 <span className="mono">{selected.challenge.code}</span> · {selected.challenge.action}
               </dd>
@@ -580,8 +640,8 @@ function Gallery({
           )}
           {typeof selected.captureMeta?.durationMs === 'number' && (
             <div>
-              <dt>拍摄耗时</dt>
-              <dd className="num">{Math.round((selected.captureMeta.durationMs as number) / 1000)} 秒</dd>
+              <dt>Capture time</dt>
+              <dd className="num">{Math.round((selected.captureMeta.durationMs as number) / 1000)} s</dd>
             </div>
           )}
         </dl>
@@ -617,12 +677,12 @@ function Thumbs({
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={fileUrl(cover.id)} alt="" loading="lazy" />
               ) : (
-                <span className="thumb-video">视频</span>
+                <span className="thumb-video">Video</span>
               )}
               <span className={`tier tier-${e.layer}`}>{e.layer}</span>
               <span className="thumb-label">
                 {e.kind === 'video' ? '▶ ' : ''}
-                {SHOT_LABEL[e.shotLabel ?? ''] ?? e.shotLabel ?? '未标注'}
+                {SHOT_LABEL[e.shotLabel ?? ''] ?? e.shotLabel ?? 'Unlabeled'}
               </span>
             </button>
           );

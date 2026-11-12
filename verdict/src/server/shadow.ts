@@ -9,11 +9,11 @@ import { shadowModeOn } from './repo';
 export type Decision = 'refund' | 'offer' | 'contest' | 'ask' | 'review';
 
 export const DECISION_LABEL: Record<Decision, string> = {
-  refund: '退款',
-  offer: '和解',
-  contest: '反驳',
-  ask: '沟通补证',
-  review: '人工复核',
+  refund: 'Refund',
+  offer: 'Offer',
+  contest: 'Contest',
+  ask: 'Ask for evidence',
+  review: 'Manual review',
 };
 
 const DECISION_OF: Partial<Record<ActionType | 'none', Decision>> = {

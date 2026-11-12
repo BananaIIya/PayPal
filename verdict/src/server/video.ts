@@ -82,7 +82,7 @@ async function probe(ffprobe: string, file: string): Promise<VideoInfo> {
     streams?: { codec_type?: string; codec_name?: string; width?: number; height?: number; duration?: string; tags?: Record<string, string> }[];
   };
   const video = data.streams?.find((s) => s.codec_type === 'video');
-  if (!video) throw new Error('文件里没有视频轨道');
+  if (!video) throw new Error('The file has no video track');
   const seconds = Number(data.format?.duration ?? video.duration);
   return {
     durationMs: Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
@@ -119,7 +119,7 @@ async function select(ffmpeg: string, file: string, dir: string, prefix: string,
 export async function extractFrames(buf: Buffer, mime: VideoMime): Promise<FrameExtraction> {
   const tools = ffmpegTools();
   if (!tools) {
-    return { status: 'unavailable', reason: '服务器没有安装 ffmpeg，视频没有抽帧', info: null, frames: [], sceneCutsMs: [] };
+    return { status: 'unavailable', reason: 'ffmpeg is not installed on the server, so no frames were extracted from the video', info: null, frames: [], sceneCutsMs: [] };
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verdict-video-'));
   try {
@@ -138,10 +138,10 @@ export async function extractFrames(buf: Buffer, mime: VideoMime): Promise<Frame
     ]
       .slice(0, MAX_FRAMES)
       .sort((a, b) => a.atMs - b.atMs);
-    if (!frames.length) return { status: 'failed', reason: 'ffmpeg 没有从视频里解出画面', info, frames: [], sceneCutsMs };
+    if (!frames.length) return { status: 'failed', reason: 'ffmpeg could not decode any frames from the video', info, frames: [], sceneCutsMs };
     return { status: 'ok', reason: null, info, frames, sceneCutsMs };
   } catch (e) {
-    return { status: 'failed', reason: `视频解析失败：${e instanceof Error ? e.message.split('\n')[0] : String(e)}`, info: null, frames: [], sceneCutsMs: [] };
+    return { status: 'failed', reason: `Video parsing failed: ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`, info: null, frames: [], sceneCutsMs: [] };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -132,71 +132,71 @@ function num(value: unknown, label: string, min: number, max: number, opts: { ex
   const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
   const tooLow = opts.exclusiveMin ? n <= min : n < min;
   if (!Number.isFinite(n) || tooLow || n > max) {
-    throw new InvalidSettings(`${label}要在 ${min} 到 ${max} 之间${opts.exclusiveMin ? `，且不能等于 ${min}` : ''}`);
+    throw new InvalidSettings(`${label} must be between ${min} and ${max}${opts.exclusiveMin ? `, and cannot equal ${min}` : ''}`);
   }
   return Math.round(n * 100) / 100;
 }
 
 function parseEngine(input: EngineSettings): StoredEngine {
   const strengthWeight = {} as Record<Strength, number>;
-  for (const k of STRENGTHS) strengthWeight[k] = num(input.strengthWeight?.[k], `强度权重“${STRENGTH_LABEL[k]}”`, 0, 10);
+  for (const k of STRENGTHS) strengthWeight[k] = num(input.strengthWeight?.[k], `Strength weight "${STRENGTH_LABEL[k]}"`, 0, 10);
   if (!(strengthWeight.strong >= strengthWeight.moderate && strengthWeight.moderate >= strengthWeight.weak)) {
-    throw new InvalidSettings('强度权重要满足 强 ≥ 中 ≥ 弱');
+    throw new InvalidSettings('Strength weights must satisfy strong ≥ moderate ≥ weak');
   }
   const layerWeight = {} as Record<LayerGroup, number>;
-  for (const g of GROUPS) layerWeight[g] = num(input.layerWeight?.[g], `证据层级权重“${LAYER_WEIGHT_GROUPS[g].label}”`, 0, 1);
+  for (const g of GROUPS) layerWeight[g] = num(input.layerWeight?.[g], `Evidence tier weight "${LAYER_WEIGHT_GROUPS[g].label}"`, 0, 1);
   // 层级只表示默认可信度（开发文档“证据入口”），所以不允许低层证据比高层证据更可信。
   if (!(layerWeight.ab >= layerWeight.cPaypal && layerWeight.ab >= layerWeight.cUploaded && layerWeight.cPaypal >= layerWeight.d && layerWeight.cUploaded >= layerWeight.d)) {
-    throw new InvalidSettings('证据层级权重要满足 A、B ≥ C ≥ D');
+    throw new InvalidSettings('Evidence tier weights must satisfy A, B ≥ C ≥ D');
   }
-  const riskMedium = num(input.riskMedium, '中风险阈值', 0, 20, { exclusiveMin: true });
-  const riskHigh = num(input.riskHigh, '高风险阈值', 0, 20, { exclusiveMin: true });
-  if (riskHigh <= riskMedium) throw new InvalidSettings('高风险阈值要大于中风险阈值');
+  const riskMedium = num(input.riskMedium, 'Medium risk threshold', 0, 20, { exclusiveMin: true });
+  const riskHigh = num(input.riskHigh, 'High risk threshold', 0, 20, { exclusiveMin: true });
+  if (riskHigh <= riskMedium) throw new InvalidSettings('High risk threshold must be greater than the Medium risk threshold');
   return {
     strengthWeight,
     layerWeight,
     riskMedium,
     riskHigh,
-    minDataConfidence: num(input.minDataConfidence, '“Q 充足”阈值', 0, 1, { exclusiveMin: true }),
-    merchantRiskHigh: num(input.merchantRiskHigh, '“M 高”阈值', 0, 1, { exclusiveMin: true }),
+    minDataConfidence: num(input.minDataConfidence, '"Q sufficient" threshold', 0, 1, { exclusiveMin: true }),
+    merchantRiskHigh: num(input.merchantRiskHigh, '"M high" threshold', 0, 1, { exclusiveMin: true }),
   };
 }
 
 function text(value: unknown, label: string, max: number, required: boolean): string {
   const s = typeof value === 'string' ? value.trim() : '';
-  if (required && !s) throw new InvalidSettings(`请填写退货地址的${label}`);
-  if (s.length > max) throw new InvalidSettings(`退货地址的${label}不能超过 ${max} 个字符`);
+  if (required && !s) throw new InvalidSettings(`Enter the return address ${label}`);
+  if (s.length > max) throw new InvalidSettings(`Return address ${label} cannot exceed ${max} characters`);
   return s;
 }
 
 function parseAddress(input: ReturnAddress): ReturnAddress {
-  const countryCode = text(input.countryCode, '国家代码', 2, true).toUpperCase();
-  if (!/^[A-Z]{2}$/.test(countryCode)) throw new InvalidSettings('国家代码要用两位字母，比如 US、CN');
+  const countryCode = text(input.countryCode, 'country code', 2, true).toUpperCase();
+  if (!/^[A-Z]{2}$/.test(countryCode)) throw new InvalidSettings('Country code must be two letters, e.g. US, CN');
   const address: ReturnAddress = {
-    line1: text(input.line1, '街道地址', 300, true),
-    city: text(input.city, '城市', 120, true),
+    line1: text(input.line1, 'street address', 300, true),
+    city: text(input.city, 'city', 120, true),
     // 美国、加拿大、中国的地址 PayPal 要求填州或省。
-    state: text(input.state, '州/省', 300, ['US', 'CA', 'CN'].includes(countryCode)),
-    postalCode: text(input.postalCode, '邮编', 60, true),
+    state: text(input.state, 'state/province', 300, ['US', 'CA', 'CN'].includes(countryCode)),
+    postalCode: text(input.postalCode, 'postal code', 60, true),
     countryCode,
   };
-  const line2 = text(input.line2, '地址第二行', 300, false);
+  const line2 = text(input.line2, 'address line 2', 300, false);
   return line2 ? { ...address, line2 } : address;
 }
 
 function parsePolicy(input: PolicySettings): PolicySettings {
   const category = typeof input.category === 'string' ? input.category.trim() : '';
-  if (!CATEGORY_RE.test(category)) throw new InvalidSettings(`类目“${category}”的名称无效`);
+  if (!CATEGORY_RE.test(category)) throw new InvalidSettings(`Category name "${category}" is invalid`);
   const flag = (v: unknown, label: string) => {
-    if (typeof v !== 'boolean') throw new InvalidSettings(`类目“${category}”的“${label}”要选是或否`);
+    if (typeof v !== 'boolean') throw new InvalidSettings(`"${label}" for category "${category}" must be yes or no`);
     return v;
   };
   return {
     category,
-    returnable: flag(input.returnable, '可退货'),
-    perishable: flag(input.perishable, '易腐'),
-    safetySensitive: flag(input.safetySensitive, '涉及安全'),
-    identityRequired: flag(input.identityRequired, '核对序列号'),
+    returnable: flag(input.returnable, 'Returnable'),
+    perishable: flag(input.perishable, 'Perishable'),
+    safetySensitive: flag(input.safetySensitive, 'Safety-sensitive'),
+    identityRequired: flag(input.identityRequired, 'Check serial number'),
   };
 }
 
@@ -235,7 +235,7 @@ function recomputeOpenClaims(merchantId: string, category: string | null): { rec
       const from = LEVEL_LABEL[before.level];
       const to = LEVEL_LABEL[after.level];
       changed.push({ claimId: id, from, to });
-      addTimeline(id, 'analysis', '判定设置修改后重新判定', `${from} → ${to}`);
+      addTimeline(id, 'analysis', 'Re-evaluated after verdict settings change', `${from} → ${to}`);
     }
   }
   return { recomputed: rows.length, changed };
@@ -261,19 +261,19 @@ export function updateSettings(merchantId: string, input: SettingsInput): Settin
     else if (input.engine !== undefined) next.engine = parseEngine(input.engine);
     if (input.categoryEngine !== undefined) {
       const { category, engine } = input.categoryEngine ?? ({} as { category?: unknown; engine?: unknown });
-      if (typeof category !== 'string' || !CATEGORY_RE.test(category)) throw new InvalidSettings('类目名称无效');
+      if (typeof category !== 'string' || !CATEGORY_RE.test(category)) throw new InvalidSettings('Invalid category name');
       const own = { ...next.categoryEngine };
       if (engine === null) delete own[category];
       else {
-        if (!engine || typeof engine !== 'object') throw new InvalidSettings('类目专用配置格式不对');
+        if (!engine || typeof engine !== 'object') throw new InvalidSettings('Invalid category-specific config format');
         own[category] = parseEngine(engine as EngineSettings);
       }
-      if (Object.keys(own).length > MAX_CATEGORY_ENGINES) throw new InvalidSettings(`最多给 ${MAX_CATEGORY_ENGINES} 个类目单独配置`);
+      if (Object.keys(own).length > MAX_CATEGORY_ENGINES) throw new InvalidSettings(`At most ${MAX_CATEGORY_ENGINES} categories can have their own config`);
       if (Object.keys(own).length > 0) next.categoryEngine = own;
       else delete next.categoryEngine;
     }
     if (input.shadowMode !== undefined) {
-      if (typeof input.shadowMode !== 'boolean') throw new InvalidSettings('影子模式要选开或关');
+      if (typeof input.shadowMode !== 'boolean') throw new InvalidSettings('Shadow mode must be on or off');
       if (input.shadowMode) next.shadowMode = true;
       else delete next.shadowMode;
     }
@@ -281,12 +281,12 @@ export function updateSettings(merchantId: string, input: SettingsInput): Settin
     else if (input.returnAddress !== undefined) next.returnAddress = parseAddress(input.returnAddress);
     if (input.retentionDays === null) delete next.retentionDays;
     else if (input.retentionDays !== undefined) {
-      const days = num(input.retentionDays, '证据保留天数', 1, 3650);
-      if (!Number.isInteger(days)) throw new InvalidSettings('证据保留天数要是整数');
+      const days = num(input.retentionDays, 'Evidence retention days', 1, 3650);
+      if (!Number.isInteger(days)) throw new InvalidSettings('Evidence retention days must be a whole number');
       next.retentionDays = days;
     }
     if (input.policies !== undefined) {
-      if (!Array.isArray(input.policies)) throw new InvalidSettings('类目策略格式不对');
+      if (!Array.isArray(input.policies)) throw new InvalidSettings('Invalid category policy format');
       policies = input.policies.map(parsePolicy);
     }
   } catch (e) {

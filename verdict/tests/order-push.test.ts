@@ -94,7 +94,7 @@ describe('订单推送', () => {
     const claimId = ingest.createClaim({ merchantId: row.merchant_id, orderId: row.id, origin: 'manual_import', type: 'not_received', status: 'analyzing' });
     const res = push.pushOrder(order({ shipping: { carrier: 'UPS', trackingNumber: '1Z999AA10123456785' } }));
     expect(res.ok && res.body.updated).toEqual(['trackingNumber']);
-    expect(repo.claimTimeline(claimId).some((t) => t.title === '商家系统更新了物流信息')).toBe(true);
+    expect(repo.claimTimeline(claimId).some((t) => t.title === 'Merchant system updated shipping info')).toBe(true);
   });
 
   it.each([

@@ -367,7 +367,7 @@ describe('请求格式', () => {
     const [first, second] = await Promise.all(
       fake.writes(/provide-evidence$/).map(async (c) => JSON.parse(await ((c.raw as FormData).get('input') as Blob).text()).evidences[0]),
     );
-    expect(first).toEqual({ evidence_type: 'OTHER', notes: '已发货\n物流：UPS 1Z9' });
+    expect(first).toEqual({ evidence_type: 'OTHER', notes: '已发货\nTracking: UPS 1Z9' });
     // 说明里已经有单号时不重复追加。
     expect(second).toEqual({ evidence_type: 'OTHER', notes: '单号 1Z9 已签收' });
   });
@@ -381,7 +381,7 @@ describe('请求格式', () => {
       .catch((e) => e);
     expect(err).toBeInstanceOf(clientMod.PayPalApiError);
     expect(err.issue).toBe('EVIDENCE_TYPE_IS_NOT_ALLOWED');
-    expect(err.message).toMatch(/同一类型已经提交过/);
+    expect(err.message).toMatch(/same type was already submitted/);
     expect(err.message).not.toMatch(/not well-formed/);
   });
 
@@ -451,13 +451,13 @@ describe('请求格式', () => {
 
     // 只允许直接退款的争议，不能要求退货。
     fake.disputes.set('D5', rawDispute('D5'));
-    await expect(client().makeOffer('D5', { amount: 1, currency: 'USD', note: 'x', returnAddress: address }, 'k5')).rejects.toThrow(/只接受 REFUND/);
+    await expect(client().makeOffer('D5', { amount: 1, currency: 'USD', note: 'x', returnAddress: address }, 'k5')).rejects.toThrow(/only accepts REFUND offers/);
     expect(fake.writes(/D5\/make-offer$/)).toHaveLength(0);
   });
 
   it('只接受退货退款时，报错提示勾选要求退货', async () => {
     fake.disputes.set('D6', rawDispute('D6', { allowed_response_options: { make_offer: { offer_types: ['REFUND_WITH_RETURN'] } } }));
-    await expect(client().makeOffer('D6', { amount: 1, currency: 'USD', note: 'x' }, 'k6')).rejects.toThrow(/勾选“要求买家先退货”/);
+    await expect(client().makeOffer('D6', { amount: 1, currency: 'USD', note: 'x' }, 'k6')).rejects.toThrow(/Check "Require buyer to return the item first"/);
   });
 
   it('accept-claim 和 escalate 是 JSON', async () => {
@@ -752,7 +752,7 @@ describe('定时同步', () => {
     const view = sandbox.toDisputeView(rawDispute(c.disputeId, { status: 'RESOLVED', update_time: '2026-11-02T00:00:00.000Z', dispute_outcome: { outcome_code: 'RESOLVED_SELLER_FAVOUR' } }));
     sync.upsertClaimFromDispute(view);
     expect(repo.getClaim(c.claimId)!.status).toBe('closed');
-    expect(repo.claimTimeline(c.claimId).some((t: { title: string }) => t.title === 'PayPal 争议已结案')).toBe(true);
+    expect(repo.claimTimeline(c.claimId).some((t: { title: string }) => t.title === 'PayPal dispute closed')).toBe(true);
   });
 
   it('动作发出后，只有状态真的变回“等商家”才回到待决定', async () => {
@@ -820,7 +820,7 @@ describe('动作路由', () => {
     fake.failOn('GET', new RegExp(`disputes/${c.disputeId}$`), () => json({}, 500), 2);
     const res = await actions.executeAction(actionReq(c));
     expect(res.status).toBe(502);
-    expect(String(res.body.error)).toContain('动作没有执行');
+    expect(String(res.body.error)).toContain('action did not run');
     expect(repo.claimActions(c.claimId)).toHaveLength(0);
   });
 
@@ -847,7 +847,7 @@ describe('动作路由', () => {
   it('索赔链接替换后超长时拒绝，不发请求', async () => {
     const c = await sandboxClaim();
     const { PORTAL_LINK_PLACEHOLDER } = await import('@/core/recommend');
-    const message = `${'字'.repeat(1990)}${PORTAL_LINK_PLACEHOLDER}`;
+    const message = `${'字'.repeat(1987)}${PORTAL_LINK_PLACEHOLDER}`;
     expect(message.length).toBeLessThanOrEqual(2000);
     const res = await actions.executeAction(actionReq(c, { payload: { message } }));
     expect(res.status).toBe(400);
@@ -969,7 +969,7 @@ describe('防止重复动用资金', () => {
 
     const again = await actions.executeAction(actionReq(c, { type: 'refund', payload: { amount: 39 } }));
     expect(again.status).toBe(409);
-    expect(again.body.error).toContain('仍在处理');
+    expect(again.body.error).toContain('still processing');
     expect(fake.writes(/refund$/)).toHaveLength(1);
 
     fake.refundStatus = 'COMPLETED';
@@ -1117,7 +1117,7 @@ describe('测试下单', () => {
 
   it('付款链接不是沙箱地址时拒绝，不落库', async () => {
     fake.failOn('POST', /^\/v2\/checkout\/orders$/, () => json({ id: 'X', links: [{ rel: 'payer-action', href: 'https://www.paypal.com/checkoutnow?token=X' }] }));
-    await expect(shop.createTestOrder('mug', 'http://localhost:3000')).rejects.toThrow(/不是沙箱地址/);
+    await expect(shop.createTestOrder('mug', 'http://localhost:3000')).rejects.toThrow(/not a sandbox URL/);
     expect(dbm.db().prepare("SELECT 1 FROM orders WHERE paypal_order_id = 'X'").get()).toBeUndefined();
   });
 
@@ -1128,14 +1128,14 @@ describe('测试下单', () => {
 
   it('把付款状态翻译成商家能看懂的话', () => {
     const state = (status: string, reason: string | null, sellerProtection: string | null) => shop.describeCapture({ status, reason, sellerProtection });
-    expect(state('COMPLETED', null, 'ELIGIBLE')).toEqual({ summary: '已完成 · 有卖家保护', warning: null });
+    expect(state('COMPLETED', null, 'ELIGIBLE')).toEqual({ summary: 'Completed · Seller protection', warning: null });
     const echeck = state('PENDING', 'ECHECK', 'NOT_ELIGIBLE');
-    expect(echeck.summary).toBe('待处理 · 没有卖家保护');
+    expect(echeck.summary).toBe('Pending · No seller protection');
     expect(echeck.warning).toMatch(/eCheck/);
     expect(echeck.warning).toMatch(/Visa/);
-    expect(state('PENDING', 'BUYER_COMPLAINT', 'ELIGIBLE').warning).toMatch(/暂扣/);
+    expect(state('PENDING', 'BUYER_COMPLAINT', 'ELIGIBLE').warning).toMatch(/holding these funds/);
     expect(state('PENDING', 'RECEIVING_PREFERENCE_MANDATES_MANUAL_ACTION', null).warning).toMatch(/RECEIVING_PREFERENCE/);
-    expect(state('PARTIALLY_REFUNDED', null, null)).toEqual({ summary: '已部分退款', warning: null });
+    expect(state('PARTIALLY_REFUNDED', null, null)).toEqual({ summary: 'Partially refunded', warning: null });
     expect(state('SOMETHING_NEW', null, null).summary).toBe('SOMETHING_NEW');
   });
 
@@ -1149,13 +1149,13 @@ describe('测试下单', () => {
       json({ status: 'PENDING', status_details: { reason: 'ECHECK' }, seller_protection: { status: 'NOT_ELIGIBLE' } }),
     );
     const read = await shop.captureState(repo.getOrder(orderId)!);
-    expect(read).toMatchObject({ summary: '待处理 · 没有卖家保护', error: null });
+    expect(read).toMatchObject({ summary: 'Pending · No seller protection', error: null });
     expect(read!.warning).toMatch(/Visa/);
     expect(fake.writes(/.*/)).toHaveLength(0);
 
     fake.failOn('GET', /^\/v2\/payments\/captures\//, () => json({ name: 'INTERNAL', message: '坏了' }, 500), 2);
     const failed = await shop.captureState(repo.getOrder(orderId)!);
-    expect(failed).toMatchObject({ summary: '暂时读取不到', warning: null });
+    expect(failed).toMatchObject({ summary: 'Unavailable right now', warning: null });
     expect(failed!.error).toBeTruthy();
     dbm.db().prepare('DELETE FROM orders WHERE id = ?').run(orderId);
   });
@@ -1194,7 +1194,7 @@ describe('测试下单', () => {
   it('捕获响应里没有交易号时报错，不写入', async () => {
     const { orderId } = await shop.createTestOrder('jacket', 'http://localhost:3000');
     fake.failOn('POST', /capture$/, () => json({ purchase_units: [] }));
-    await expect(shop.completeTestOrder('PPORDER-1')).rejects.toThrow(/交易 ID/);
+    await expect(shop.completeTestOrder('PPORDER-1')).rejects.toThrow(/transaction ID/);
     expect(repo.getOrder(orderId)!.capture_id).toBeNull();
     dbm.db().prepare('DELETE FROM orders WHERE id = ?').run(orderId);
   });
@@ -1275,10 +1275,13 @@ describe('后续争议操作：补充说明、确认退货、申诉', () => {
     const c = await sandboxClaim({ links: linksFor('x', ['acknowledge-return-item']).map((l) => ({ ...l, href: l.href.replace('/x/', '/any/') })) });
     const bad = await actions.executeAction(actionReq(c, { type: 'acknowledge_return_item', payload: { acknowledgementType: 'WHATEVER' as never } }));
     expect(bad.status).toBe(400);
+    // 没选验收结果不会默认成“已收到”。
+    const unset = await actions.executeAction(actionReq(c, { type: 'acknowledge_return_item', payload: {} }));
+    expect(unset.status).toBe(400);
     expect(sellerWrites()).toHaveLength(0);
     const ok = await actions.executeAction(actionReq(c, { type: 'acknowledge_return_item', payload: { acknowledgementType: 'MISSING_ITEMS' } }));
     expect(ok.status).toBe(200);
-    expect(fake.writes(/acknowledge-return-item$/)[0].json).toEqual({ note: '商家已处理买家退回的包裹。', acknowledgement_type: 'MISSING_ITEMS' });
+    expect(fake.writes(/acknowledge-return-item$/)[0].json).toEqual({ note: 'The merchant has processed the package the buyer returned.', acknowledgement_type: 'MISSING_ITEMS' });
   });
 
   it('补充说明不能为空，并且只在 UNDER_REVIEW 给了链接时可用', async () => {
@@ -1303,7 +1306,7 @@ describe('后续争议操作：补充说明、确认退货、申诉', () => {
     dbm.db().prepare(`UPDATE verdicts SET suggested_action = 'make_offer', report = ? WHERE id = ?`).run(JSON.stringify(report), c.verdictId);
     const view = await views.claimView(c.claimId);
     const offer = view!.followUps.find((f) => f.type === 'make_offer')!;
-    expect(offer).toMatchObject({ withReturn: true, label: '提出退货退款' });
+    expect(offer).toMatchObject({ withReturn: true, label: 'Offer refund with return' });
     expect(view!.paypal.offerTypes).toEqual(['REFUND', 'REFUND_WITH_RETURN']);
     expect(view!.paypal.returnAddress).toContain('San Jose');
 
@@ -1323,6 +1326,8 @@ describe('后续争议操作：补充说明、确认退货、申诉', () => {
     await client().getDispute(c.disputeId, { fresh: true });
     const shipped = await views.claimView(c.claimId);
     expect(shipped!.followUps.map((f) => f.type)).toEqual(['acknowledge_return_item']);
+    // 系统无法代替开箱验收，草稿不预选“已收到”。
+    expect(shipped!.followUps[0].acknowledgementType).toBeUndefined();
 
     // 只允许直接退款的争议不给这个选项。
     const plain = await sandboxClaim();
@@ -1401,11 +1406,11 @@ describe('核验报告 PDF', () => {
     const timeline = repo.claimTimeline(c.claimId);
     const merchant = reportPdf.visibleTimeline(timeline, 'merchant');
     const paypal = reportPdf.visibleTimeline(timeline, 'paypal');
-    expect(merchant.map((t) => t.title)).toEqual(expect.arrayContaining(['动作执行失败', '沙箱测试工具', '商家发送消息']));
-    expect(paypal.map((t) => t.title)).toContain('商家发送消息');
-    expect(paypal.map((t) => t.title)).not.toContain('动作执行失败');
-    expect(paypal.map((t) => t.title)).not.toContain('沙箱测试工具');
-    expect(JSON.stringify(paypal)).not.toContain('确认人');
+    expect(merchant.map((t) => t.title)).toEqual(expect.arrayContaining(['Action failed', 'Sandbox test tool', 'Merchant sent message']));
+    expect(paypal.map((t) => t.title)).toContain('Merchant sent message');
+    expect(paypal.map((t) => t.title)).not.toContain('Action failed');
+    expect(paypal.map((t) => t.title)).not.toContain('Sandbox test tool');
+    expect(JSON.stringify(paypal)).not.toContain('Confirmed by');
     expect(JSON.stringify(paypal)).not.toContain('/v1/customer/disputes');
   });
 
@@ -1417,7 +1422,7 @@ describe('核验报告 PDF', () => {
         actionReq(c, { type: 'provide_evidence', payload: { notes: '说明', evidenceType: 'OTHER', attachEvidence: false, attachReport: true } }),
       );
       expect(res.status).toBe(200);
-      expect(String((res.body.response as Record<string, unknown>).reportSkipped)).toContain('字体');
+      expect(String((res.body.response as Record<string, unknown>).reportSkipped)).toContain('font');
       expect((fake.writes(/provide-evidence$/)[0].raw as FormData).get('file1')).toBeNull();
       expect((await views.claimView(c.claimId))!.paypal.reportAvailable).toBe(false);
     } finally {

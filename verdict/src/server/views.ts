@@ -1,6 +1,6 @@
 import { FOLLOW_UP_TYPES, followUpDraft, neutralActions, returnOfferDraft } from '@/core/recommend';
 import type { SuggestedAction } from '@/core/types';
-import { identityRefundAllowed, paypalState, payoutBlockedByVerdict } from './actions';
+import { identityRefundAllowed, paypalState, payoutBlockedByVerdict, verdictRulesOutdated } from './actions';
 import { selectAttachmentEvidence } from './attachments';
 import { claimDetail, formatReturnAddress, getClaim, getOrder, getPolicy, merchantAgreedRefund, merchantReturnAddress, shadowModeOn } from './repo';
 import { findReportFont } from './report-pdf';
@@ -64,8 +64,10 @@ export async function claimView(id: string) {
             {
               level: report.level,
               suggestedAction: report.primaryAction.type,
-              identityRefund: identityRefundAllowed(report.findings),
+              identityRefund: identityRefundAllowed(report),
               alreadyAgreed: merchantAgreedRefund(order.id),
+              hardRule: report.findings.some((f) => f.hardRule),
+              rulesVersion: report.rulesVersion ?? null,
             },
             a,
           ),
@@ -76,6 +78,8 @@ export async function claimView(id: string) {
     allowedActions: state.allowed,
     followUps: shadow ? [] : followUps,
     actionOptions,
+    /** 判定是按旧版规则算的：退款类按钮已拿掉，需要重新分析。 */
+    rulesOutdated: !!report && verdictRulesOutdated(report.rulesVersion ?? null),
     /** 影子模式：判定照常计算，但不显示给处理人员。 */
     shadow,
     paypal: {
@@ -110,7 +114,7 @@ export async function claimView(id: string) {
         runs: base.runs.map((r) => ({ ...r, note: null })),
         // 演示场景的标题、故事和文档期望都会透露判定。
         claim: { ...base.claim, scenario: null },
-        timeline: base.timeline.map((t) => (t.title === '判定设置修改后重新判定' ? { ...t, detail: null } : t)),
+        timeline: base.timeline.map((t) => (t.title === 'Re-evaluated after verdict settings change' ? { ...t, detail: null } : t)),
       }
     : base;
   // node:sqlite 的行没有原型，React 不允许这种对象跨过服务端到客户端组件的边界。

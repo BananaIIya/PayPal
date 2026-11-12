@@ -45,17 +45,17 @@ export type TokenCheck =
 
 export function checkPortalToken(token: string): TokenCheck {
   const [body, mac] = token.split('.');
-  if (!body || !mac) return { ok: false, status: 401, error: '链接无效' };
+  if (!body || !mac) return { ok: false, status: 401, error: 'Invalid link' };
   const expected = Buffer.from(sign(body));
   const actual = Buffer.from(mac);
   if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
-    return { ok: false, status: 401, error: '链接无效' };
+    return { ok: false, status: 401, error: 'Invalid link' };
   }
   const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as PortalTokenPayload;
-  if (Date.now() > payload.exp) return { ok: false, status: 410, error: '链接已过期，请联系商家获取新的链接' };
+  if (Date.now() > payload.exp) return { ok: false, status: 410, error: 'This link has expired. Contact the merchant for a new one.' };
   const row = db().prepare('SELECT used FROM portal_tokens WHERE id = ?').get(payload.jti) as { used: number } | undefined;
-  if (!row) return { ok: false, status: 401, error: '链接无效' };
-  if (row.used >= payload.max) return { ok: false, status: 410, error: '这个链接的提交次数已用完，请联系商家' };
+  if (!row) return { ok: false, status: 401, error: 'Invalid link' };
+  if (row.used >= payload.max) return { ok: false, status: 410, error: 'This link has no submissions left. Contact the merchant.' };
   return { ok: true, payload, used: row.used };
 }
 

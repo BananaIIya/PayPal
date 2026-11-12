@@ -5,7 +5,7 @@ import { deletePayPalCredentials, paypalCredentialView, savePayPalCredentials } 
 
 export const dynamic = 'force-dynamic';
 
-const OWNER_ONLY = '只有店主可以查看和修改 PayPal 凭证';
+const OWNER_ONLY = 'Only the owner can view and change PayPal credentials';
 
 export async function GET(req: NextRequest) {
   await ready();

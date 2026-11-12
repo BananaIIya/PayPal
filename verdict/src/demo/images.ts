@@ -166,7 +166,7 @@ function drawScene(s: Scene): string {
       let y = 150;
       let bubbles = '';
       for (const line of s.lines) {
-        const w = Math.min(600, 80 + line.text.length * 30);
+        const w = Math.min(600, 80 + line.text.length * 15);
         const x = line.me ? W - 60 - w : 60;
         bubbles += `<rect x="${x}" y="${y}" width="${w}" height="74" rx="16" fill="${line.me ? '#a7e088' : '#ffffff'}"/>
           <text x="${x + 22}" y="${y + 47}" font-family="PingFang SC, Heiti SC, sans-serif" font-size="27" fill="#111">${esc(line.text)}</text>`;
@@ -174,7 +174,7 @@ function drawScene(s: Scene): string {
       }
       return `<rect width="${W}" height="${H}" fill="#ededed"/>
         <rect width="${W}" height="96" fill="#f7f7f7"/>
-        <text x="${W / 2}" y="60" font-family="PingFang SC, Heiti SC, sans-serif" font-size="30" fill="#111" text-anchor="middle">店铺客服 · 订单 ${esc(s.orderNo)}</text>${bubbles}`;
+        <text x="${W / 2}" y="60" font-family="Helvetica, Arial, PingFang SC, sans-serif" font-size="30" fill="#111" text-anchor="middle">Store support · Order ${esc(s.orderNo)}</text>${bubbles}`;
     }
   }
 }
@@ -183,8 +183,8 @@ export async function renderScene(scene: Scene): Promise<Buffer> {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
     ${drawScene(scene)}
     <g opacity=".7">
-      <rect x="${W - 210}" y="${H - 42}" width="196" height="30" rx="4" fill="rgba(255,255,255,.75)"/>
-      <text x="${W - 112}" y="${H - 21}" font-family="PingFang SC, Heiti SC, sans-serif" font-size="17" fill="#333" text-anchor="middle">演示占位图 · 程序生成</text>
+      <rect x="${W - 274}" y="${H - 42}" width="260" height="30" rx="4" fill="rgba(255,255,255,.75)"/>
+      <text x="${W - 144}" y="${H - 21}" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#333" text-anchor="middle">Demo placeholder · generated</text>
     </g>
   </svg>`;
   return sharp(Buffer.from(svg)).jpeg({ quality: 90 }).toBuffer();

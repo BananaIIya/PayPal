@@ -54,12 +54,12 @@ describe('设置校验', () => {
   });
 
   it.each([
-    ['高风险阈值不大于中风险阈值', { riskMedium: 2, riskHigh: 2 }, '高风险阈值要大于中风险阈值'],
-    ['强度顺序颠倒', { strengthWeight: { strong: 1, moderate: 2, weak: 0.5 } }, '强 ≥ 中 ≥ 弱'],
-    ['低层证据比高层更可信', { layerWeight: { ab: 0.5, cPaypal: 0.8, cUploaded: 0.4, d: 0.3 } }, 'A、B ≥ C ≥ D'],
-    ['层级权重超过 1', { layerWeight: { ab: 1.5, cPaypal: 0.8, cUploaded: 0.6, d: 0.3 } }, '0 到 1'],
-    ['Q 阈值为 0', { minDataConfidence: 0 }, '不能等于 0'],
-    ['不是数字', { riskMedium: null as unknown as number }, '中风险阈值'],
+    ['高风险阈值不大于中风险阈值', { riskMedium: 2, riskHigh: 2 }, 'High risk threshold must be greater than the Medium risk threshold'],
+    ['强度顺序颠倒', { strengthWeight: { strong: 1, moderate: 2, weak: 0.5 } }, 'strong ≥ moderate ≥ weak'],
+    ['低层证据比高层更可信', { layerWeight: { ab: 0.5, cPaypal: 0.8, cUploaded: 0.4, d: 0.3 } }, 'A, B ≥ C ≥ D'],
+    ['层级权重超过 1', { layerWeight: { ab: 1.5, cPaypal: 0.8, cUploaded: 0.6, d: 0.3 } }, 'between 0 and 1'],
+    ['Q 阈值为 0', { minDataConfidence: 0 }, 'cannot equal 0'],
+    ['不是数字', { riskMedium: null as unknown as number }, 'Medium risk threshold'],
   ])('%s时拒绝，设置不变', (_name, over, message) => {
     const res = settings.updateSettings(merchantId, { engine: engine(over as never) });
     expect(res.ok).toBe(false);
@@ -70,9 +70,9 @@ describe('设置校验', () => {
   it('退货地址缺城市、国家代码不是两位字母、美国地址缺州时拒绝', () => {
     const base = { line1: '1 Main St', city: 'Austin', state: 'TX', postalCode: '73301', countryCode: 'US' };
     for (const [bad, msg] of [
-      [{ ...base, city: ' ' }, '城市'],
-      [{ ...base, countryCode: 'USA' }, '国家代码'],
-      [{ ...base, state: '' }, '州/省'],
+      [{ ...base, city: ' ' }, 'city'],
+      [{ ...base, countryCode: 'USA' }, 'country code'],
+      [{ ...base, state: '' }, 'state/province'],
     ] as const) {
       const res = settings.updateSettings(merchantId, { returnAddress: bad });
       expect(res.ok).toBe(false);
@@ -118,7 +118,7 @@ describe('保存设置', () => {
     const changedClaim = res.changed[0].claimId;
     const report = JSON.parse(repo.latestVerdict(changedClaim)!.report);
     expect(report.config.riskHigh).toBe(0.4);
-    expect(repo.claimTimeline(changedClaim).some((t) => t.title === '判定设置修改后重新判定')).toBe(true);
+    expect(repo.claimTimeline(changedClaim).some((t) => t.title === 'Re-evaluated after verdict settings change')).toBe(true);
 
     const reset = settings.updateSettings(merchantId, { engine: null });
     expect(reset.ok && reset.view.customized).toBe(false);
@@ -181,7 +181,7 @@ describe('保存设置', () => {
         expect(repo.latestVerdict(c.id)!.id).toBe(before.get(c.id)!.id);
       }
     }
-    expect(describeConfig(repo.engineConfigFor(merchantId, category))).toContain('专用配置');
+    expect(describeConfig(repo.engineConfigFor(merchantId, category))).toContain('Category config');
 
     // 改商家默认不影响有专用配置的类目。
     settings.updateSettings(merchantId, { engine: engine({ riskMedium: 5, riskHigh: 9 }) });

@@ -83,7 +83,7 @@ describe('证据保留期', () => {
     expect(pipeline.hasPurgedEvidence(claimId)).toBe(true);
     await pipeline.runAnalysis(claimId, { offline: true });
     expect(repo.claimSignals(claimId).map((s) => s.id)).toEqual(signals);
-    expect(repo.claimTimeline(claimId).some((t) => t.title === '跳过重新分析')).toBe(true);
+    expect(repo.claimTimeline(claimId).some((t) => t.title === 'Re-analysis skipped')).toBe(true);
   });
 
   it('索赔详情里能看出原件已删除', () => {

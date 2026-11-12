@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 
 /** 原件已删除时返回一张占位图，页面上所有引用这份证据的位置都能看出原因，不会显示成裂图。 */
 function placeholder(text: string): NextResponse {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480"><rect width="640" height="480" fill="#ece9e1"/><text x="320" y="230" font-size="28" text-anchor="middle" fill="#6b675d" font-family="sans-serif">${text}</text><text x="320" y="272" font-size="18" text-anchor="middle" fill="#8a867b" font-family="sans-serif">哈希与分析结果仍保留</text></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480"><rect width="640" height="480" fill="#ece9e1"/><text x="320" y="230" font-size="28" text-anchor="middle" fill="#6b675d" font-family="sans-serif">${text}</text><text x="320" y="272" font-size="18" text-anchor="middle" fill="#8a867b" font-family="sans-serif">Hash and analysis results are kept</text></svg>`;
   return new NextResponse(svg, {
     headers: {
       'Content-Type': 'image/svg+xml',
@@ -28,13 +28,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const row = db().prepare('SELECT sha256, mime_type, purged_at FROM evidence WHERE id = ?').get(id) as
     | { sha256: string; mime_type: string; purged_at: string | null }
     | undefined;
-  if (!row) return NextResponse.json({ error: '证据不存在' }, { status: 404 });
-  if (row.purged_at) return placeholder('原件已按保留期删除');
+  if (!row) return NextResponse.json({ error: 'Evidence not found' }, { status: 404 });
+  if (row.purged_at) return placeholder('Original deleted after retention period');
   let data: Buffer;
   try {
     data = readFile(row.sha256);
   } catch {
-    return placeholder('原件文件不存在');
+    return placeholder('Original file not found');
   }
   const headers: Record<string, string> = {
     'Content-Type': row.mime_type,

@@ -17,11 +17,11 @@ export interface GuardOptions {
 }
 
 export function authorize(req: NextRequest, opts: GuardOptions = {}): AuthUser | NextResponse {
-  if (opts.write && isCrossSite(req)) return NextResponse.json({ error: '拒绝跨站请求' }, { status: 403 });
+  if (opts.write && isCrossSite(req)) return NextResponse.json({ error: 'Cross-site request rejected' }, { status: 403 });
   const user = sessionUser(req.cookies.get(SESSION_COOKIE)?.value);
-  if (!user) return NextResponse.json({ error: '请先登录' }, { status: 401 });
+  if (!user) return NextResponse.json({ error: 'Sign in first' }, { status: 401 });
   if (opts.owner && user.role !== 'owner') {
-    return NextResponse.json({ error: opts.ownerReason ?? '只有店主可以执行这个操作' }, { status: 403 });
+    return NextResponse.json({ error: opts.ownerReason ?? 'Only the owner can do this' }, { status: 403 });
   }
   return user;
 }

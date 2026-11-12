@@ -10,20 +10,20 @@ export function DeleteClaim({ claimId, blocked }: { claimId: string; blocked: st
   const [error, setError] = useState<string | null>(null);
 
   async function remove() {
-    if (!window.confirm('确定删除这笔索赔的全部数据吗？证据原件、判定和动作记录都会被删除，不能恢复。')) return;
+    if (!window.confirm('Delete all data for this claim? Original evidence, the verdict and action records will be deleted. This cannot be undone.')) return;
     setBusy(true);
     setError(null);
     try {
       const res = await fetch(`/api/claims/${claimId}`, { method: 'DELETE' });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(body.error ?? '删除失败');
+        setError(body.error ?? 'Delete failed');
         return;
       }
       router.push('/claims');
       router.refresh();
     } catch {
-      setError('请求没有发出去，请重试');
+      setError('The request did not go through. Try again.');
     } finally {
       setBusy(false);
     }
@@ -32,15 +32,15 @@ export function DeleteClaim({ claimId, blocked }: { claimId: string; blocked: st
   return (
     <section className="card card-pad no-print">
       <details>
-        <summary>删除这笔索赔的数据</summary>
+        <summary>Delete this claim's data</summary>
         <p className="muted small" style={{ margin: '8px 0' }}>
-          删除买家陈述、证据原件、挑战码、索赔页链接、分析信号、判定、动作记录和时间线，不能恢复。订单和双方消息属于订单，会保留。PayPal 上的争议和资金不受影响，Verdict 只留一条删除记录（编号和时间）。
+          Deletes the buyer statement, original evidence, challenge codes, claim page link, analysis signals, verdict, action records and timeline. This cannot be undone. The order and messages between both parties belong to the order and are kept. The PayPal dispute and funds are not affected. Verdict keeps only a deletion record (ID and time).
         </p>
         {blocked ? (
           <p className="notice">{blocked}</p>
         ) : (
           <button className="btn btn-danger" disabled={busy} onClick={remove}>
-            {busy ? '删除中…' : '删除全部数据'}
+            {busy ? 'Deleting…' : 'Delete all data'}
           </button>
         )}
         {error && (

@@ -3,7 +3,7 @@
 export function PrintButton() {
   return (
     <button className="btn" onClick={() => window.print()}>
-      打印或存为 PDF
+      Print or save as PDF
     </button>
   );
 }

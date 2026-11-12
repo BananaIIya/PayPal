@@ -6,7 +6,7 @@ import { requestOrigin } from '@/server/origin';
 
 export const dynamic = 'force-dynamic';
 
-const OWNER_ONLY = '只有店主可以管理成员';
+const OWNER_ONLY = 'Only the owner can manage members';
 
 export async function GET(req: NextRequest) {
   await ready();

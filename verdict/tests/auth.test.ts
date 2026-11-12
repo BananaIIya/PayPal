@@ -67,8 +67,8 @@ describe('密码', () => {
   });
 
   it('密码规则：至少 10 位，不能和邮箱一样', () => {
-    expect(auth.passwordProblem('short')).toContain('至少');
-    expect(auth.passwordProblem('a@b.example', 'A@B.example')).toContain('邮箱');
+    expect(auth.passwordProblem('short')).toContain('at least');
+    expect(auth.passwordProblem('a@b.example', 'A@B.example')).toContain('email');
     expect(auth.passwordProblem('long-enough-password')).toBeNull();
   });
 });
@@ -109,7 +109,7 @@ describe('登录与会话', () => {
   it('邮箱不存在和密码不对给同样的提示', async () => {
     const a = await auth.login('nobody@example.test', OWNER_PW);
     const b = await auth.login('owner@example.test', 'wrong-password-123');
-    expect(a).toEqual({ ok: false, status: 401, error: '邮箱或密码不对' });
+    expect(a).toEqual({ ok: false, status: 401, error: 'Incorrect email or password' });
     expect(b).toEqual(a);
   });
 
@@ -214,8 +214,8 @@ describe('成员：邀请、停用、重置', () => {
   });
 
   it('审计记录里显示名字和角色', () => {
-    expect(auth.actorLabel(agentId)).toBe('客服小李（客服）');
-    expect(auth.actorLabel('demo-owner')).toContain('演示账号');
+    expect(auth.actorLabel(agentId)).toBe('客服小李 (Agent)');
+    expect(auth.actorLabel('demo-owner')).toContain('demo account');
   });
 
   it('演示重置不清账号', async () => {
@@ -321,7 +321,7 @@ describe('凭证加密', () => {
   it('密钥格式不对或没配置时说明原因', () => {
     process.env.APP_ENCRYPTION_KEY = 'too-short';
     expect(secrets.encryptionKeyState()).toMatchObject({ configured: false });
-    expect(secrets.encryptionKeyState().error).toContain('32 字节');
+    expect(secrets.encryptionKeyState().error).toContain('32 bytes');
     delete process.env.APP_ENCRYPTION_KEY;
     expect(secrets.encryptionKeyState()).toEqual({ configured: false, error: null });
   });
@@ -397,7 +397,7 @@ describe('限流', () => {
     const limited = rate.limitPortal(r('10.0.0.99'), 'token-a', 'submit')!;
     expect(limited.status).toBe(429);
     expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
-    expect((await limited.json()).error).toContain('太频繁');
+    expect((await limited.json()).error).toContain('Too many requests');
     expect(rate.limitPortal(r('10.0.0.100'), 'token-b', 'submit')).toBeNull();
   });
 

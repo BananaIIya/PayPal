@@ -82,14 +82,14 @@ export async function buildEvidenceDocuments(claimId: string, opts: { evidence?:
   if (opts.report) {
     try {
       const report = await renderReportPdf(claimId, 'paypal');
-      if (!report) reportSkipped = '这笔索赔还没有判定，无法生成报告';
-      else if (report.data.length >= MAX_FILE_BYTES) reportSkipped = '报告超过 PayPal 的单个文件大小限制';
+      if (!report) reportSkipped = 'This claim has no verdict yet, so the report cannot be generated';
+      else if (report.data.length >= MAX_FILE_BYTES) reportSkipped = 'The report exceeds the PayPal per-file size limit';
       else {
         documents.push({ name: report.fileName, mime: 'application/pdf', data: report.data });
         total += report.data.length;
       }
     } catch (e) {
-      reportSkipped = e instanceof ReportFontUnavailableError ? e.message : `报告生成失败：${e instanceof Error ? e.message : String(e)}`;
+      reportSkipped = e instanceof ReportFontUnavailableError ? e.message : `Report generation failed: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
   if (opts.evidence) {

@@ -24,9 +24,9 @@ export function PayPalSandboxCard(p: {
     try {
       const res = await fetch('/api/paypal/check', { method: 'POST' });
       const body = await res.json().catch(() => ({}));
-      setChecks(body.checks ?? [{ name: '连接', ok: false, detail: body.error ?? '检查失败' }]);
+      setChecks(body.checks ?? [{ name: 'Connection', ok: false, detail: body.error ?? 'Check failed' }]);
     } catch {
-      setChecks([{ name: '连接', ok: false, detail: '请求没有发出去，请重试' }]);
+      setChecks([{ name: 'Connection', ok: false, detail: 'Request failed to send. Try again.' }]);
     } finally {
       setBusy(null);
     }
@@ -39,11 +39,11 @@ export function PayPalSandboxCard(p: {
       const res = await fetch('/api/paypal/sync', { method: 'POST' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setSyncError(body.error ?? '同步失败');
+        setSyncError(body.error ?? 'Sync failed');
       }
       router.refresh();
     } catch {
-      setSyncError('请求没有发出去，请重试');
+      setSyncError('Request failed to send. Try again.');
     } finally {
       setBusy(null);
     }
@@ -52,23 +52,23 @@ export function PayPalSandboxCard(p: {
   const { status, lastSync } = p;
   return (
     <section className="card card-pad">
-      <h2>PayPal 沙箱</h2>
+      <h2>PayPal sandbox</h2>
       {status.state === 'off' && (
-        <p className="muted">还没有配置。店主可以在设置页的“PayPal 凭证”里填沙箱应用的 Client ID 和 Secret，也可以写进 .env.local（步骤见 README）。没有配置时一切走模拟器。</p>
+        <p className="muted">Not configured. The owner can enter the sandbox app's Client ID and Secret under "PayPal credentials" in Settings, or add them to .env.local (see the README). Without them, everything uses the simulator.</p>
       )}
       {status.state === 'invalid' && <p className="notice notice-danger">{status.error}</p>}
       {status.state === 'ready' && (
         <>
           <dl className="kv">
-            <dt>环境</dt>
-            <dd>沙箱（代码里写死，不会连到正式环境）</dd>
+            <dt>Environment</dt>
+            <dd>Sandbox (hard-coded, never connects to live)</dd>
             <dt>Client ID</dt>
             <dd className="mono">…{status.clientIdTail}</dd>
             <dt>Webhook</dt>
-            <dd>{status.webhookConfigured ? '已配置 PAYPAL_WEBHOOK_ID' : '未配置，只靠每分钟的定时同步'}</dd>
-            <dt>上次同步</dt>
+            <dd>{status.webhookConfigured ? 'PAYPAL_WEBHOOK_ID configured' : 'Not configured. Relies on the scheduled sync every minute.'}</dd>
+            <dt>Last sync</dt>
             <dd suppressHydrationWarning>
-              {lastSync ? `${fmtDateTime(lastSync.lastRunAt)}，新增 ${lastSync.created}，更新 ${lastSync.updated}，跳过 ${lastSync.skipped.length}` : '还没有同步过'}
+              {lastSync ? `${fmtDateTime(lastSync.lastRunAt)}, ${lastSync.created} new, ${lastSync.updated} updated, ${lastSync.skipped.length} skipped` : 'Never synced'}
             </dd>
           </dl>
           {lastSync?.error && (
@@ -80,17 +80,17 @@ export function PayPalSandboxCard(p: {
             <ul className="small muted" style={{ marginTop: 10 }}>
               {lastSync.skipped.slice(0, 5).map((s) => (
                 <li key={s.id}>
-                  <span className="mono">{s.id}</span>：{s.reason}
+                  <span className="mono">{s.id}</span>: {s.reason}
                 </li>
               ))}
             </ul>
           )}
           <div className="row" style={{ marginTop: 12 }}>
             <button className="btn" disabled={!!busy} onClick={check}>
-              {busy === 'check' ? '检查中…' : '检查连接'}
+              {busy === 'check' ? 'Checking…' : 'Check connection'}
             </button>
             <button className="btn" disabled={!!busy} onClick={sync}>
-              {busy === 'sync' ? '同步中…' : '立即同步'}
+              {busy === 'sync' ? 'Syncing…' : 'Sync now'}
             </button>
           </div>
           {syncError && (
@@ -104,7 +104,7 @@ export function PayPalSandboxCard(p: {
                 <div key={c.name} style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
                   <div className="between">
                     <strong>{c.name}</strong>
-                    <span className={`badge ${c.ok ? 'level-low' : 'level-high'}`}>{c.ok ? '通过' : '未通过'}</span>
+                    <span className={`badge ${c.ok ? 'level-low' : 'level-high'}`}>{c.ok ? 'Passed' : 'Failed'}</span>
                   </div>
                   <div className="muted small">{c.detail}</div>
                 </div>

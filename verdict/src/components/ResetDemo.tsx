@@ -11,7 +11,7 @@ export function ResetDemo() {
       className="btn"
       disabled={busy}
       onClick={async () => {
-        if (!window.confirm('确定重置演示数据吗？你新建的索赔和执行过的动作都会被清除。')) return;
+        if (!window.confirm('Reset demo data? Claims you created and actions you took will be cleared.')) return;
         setBusy(true);
         await fetch('/api/demo/reset', { method: 'POST' });
         setBusy(false);
@@ -19,7 +19,7 @@ export function ResetDemo() {
         router.refresh();
       }}
     >
-      {busy ? '重置中…' : '重置演示数据'}
+      {busy ? 'Resetting…' : 'Reset demo data'}
     </button>
   );
 }

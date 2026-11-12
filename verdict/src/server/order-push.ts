@@ -29,30 +29,30 @@ class Invalid extends Error {}
 
 function str(value: unknown, label: string, max: number, opts: { required?: boolean; pattern?: RegExp } = {}): string | undefined {
   if (value === undefined || value === null || value === '') {
-    if (opts.required) throw new Invalid(`缺少 ${label}`);
+    if (opts.required) throw new Invalid(`Missing ${label}`);
     return undefined;
   }
-  if (typeof value !== 'string') throw new Invalid(`${label} 要是字符串`);
+  if (typeof value !== 'string') throw new Invalid(`${label} must be a string`);
   const s = value.trim();
-  if (opts.required && !s) throw new Invalid(`缺少 ${label}`);
-  if (s.length > max) throw new Invalid(`${label} 不能超过 ${max} 个字符`);
-  if (s && opts.pattern && !opts.pattern.test(s)) throw new Invalid(`${label} 格式不对`);
+  if (opts.required && !s) throw new Invalid(`Missing ${label}`);
+  if (s.length > max) throw new Invalid(`${label} must be at most ${max} characters`);
+  if (s && opts.pattern && !opts.pattern.test(s)) throw new Invalid(`${label} has an invalid format`);
   return s || undefined;
 }
 
 function positive(value: unknown, label: string, max: number, opts: { integer?: boolean; required?: boolean } = {}): number | undefined {
   if (value === undefined || value === null) {
-    if (opts.required) throw new Invalid(`缺少 ${label}`);
+    if (opts.required) throw new Invalid(`Missing ${label}`);
     return undefined;
   }
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > max) throw new Invalid(`${label} 要是 0 到 ${max} 之间的数字`);
-  if (opts.integer && !Number.isInteger(value)) throw new Invalid(`${label} 要是整数`);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > max) throw new Invalid(`${label} must be a number between 0 and ${max}`);
+  if (opts.integer && !Number.isInteger(value)) throw new Invalid(`${label} must be an integer`);
   return value;
 }
 
 function obj(value: unknown, label: string): Record<string, unknown> | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'object' || Array.isArray(value)) throw new Invalid(`${label} 要是对象`);
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Invalid(`${label} must be an object`);
   return value as Record<string, unknown>;
 }
 
@@ -61,10 +61,10 @@ function compact<T extends Record<string, unknown>>(o: T): T {
 }
 
 export function parseOrderPush(raw: unknown): OrderPushInput {
-  const body = obj(raw, '请求体');
-  if (!body) throw new Invalid('请求体要是 JSON 对象');
+  const body = obj(raw, 'Request body');
+  if (!body) throw new Invalid('Request body must be a JSON object');
   const itemsRaw = body.items;
-  if (!Array.isArray(itemsRaw) || itemsRaw.length === 0 || itemsRaw.length > 50) throw new Invalid('items 要有 1 到 50 个商品');
+  if (!Array.isArray(itemsRaw) || itemsRaw.length === 0 || itemsRaw.length > 50) throw new Invalid('items must have 1 to 50 entries');
   const items = itemsRaw.map((it, i) => {
     const o = obj(it, `items[${i}]`)!;
     return compact({
@@ -85,11 +85,11 @@ export function parseOrderPush(raw: unknown): OrderPushInput {
   const createdAt = str(body.createdAt, 'createdAt', 40);
   if (createdAt) {
     const t = Date.parse(createdAt);
-    if (Number.isNaN(t)) throw new Invalid('createdAt 要是 ISO 8601 时间');
-    if (t > Date.now() + 5 * 60 * 1000) throw new Invalid('createdAt 不能晚于现在');
+    if (Number.isNaN(t)) throw new Invalid('createdAt must be an ISO 8601 time');
+    if (t > Date.now() + 5 * 60 * 1000) throw new Invalid('createdAt cannot be in the future');
   }
   const email = str(buyer?.email, 'buyer.email', 254);
-  if (email && !/^[^\s@]+@[^\s@]+$/.test(email)) throw new Invalid('buyer.email 格式不对');
+  if (email && !/^[^\s@]+@[^\s@]+$/.test(email)) throw new Invalid('buyer.email has an invalid format');
   return {
     orderNo: str(body.orderNo, 'orderNo', 64, { required: true, pattern: /^[A-Za-z0-9._-]+$/ })!,
     category: str(body.category, 'category', 40, { required: true, pattern: /^[a-z0-9_-]+$/ })!,
@@ -156,7 +156,7 @@ function updateShipping(existing: OrderRow, input: OrderPushInput): OrderPushRes
     // 物流信息变了，Logistics 要按新的单号和重量重跑；已结案的索赔不动。
     const open = db().prepare("SELECT id FROM claims WHERE order_id = ? AND status != 'closed'").all(existing.id) as unknown as { id: string }[];
     for (const c of open) {
-      addTimeline(c.id, 'shipping', '商家系统更新了物流信息', changes.map(([field]) => field).join('、'));
+      addTimeline(c.id, 'shipping', 'Merchant system updated shipping info', changes.map(([field]) => field).join(', '));
       startAnalysis(c.id, { only: ['logistics'] });
     }
   }
@@ -176,11 +176,11 @@ export function pushOrder(raw: unknown): OrderPushResult {
     throw e;
   }
   const merchantId = defaultMerchantId();
-  if (!merchantId) return { ok: false, status: 503, body: { error: '没有商家数据' } };
+  if (!merchantId) return { ok: false, status: 503, body: { error: 'No merchant data' } };
 
   const existing = db().prepare('SELECT * FROM orders WHERE order_no = ?').get(input.orderNo) as OrderRow | undefined;
   if (existing) {
-    if (existing.merchant_id !== merchantId) return { ok: false, status: 409, body: { error: '订单号已被占用' } };
+    if (existing.merchant_id !== merchantId) return { ok: false, status: 409, body: { error: 'Order number is already in use' } };
     return updateShipping(existing, input);
   }
 
@@ -223,10 +223,10 @@ export function pushOrder(raw: unknown): OrderPushResult {
 /** 订单推送接口的 Bearer 密钥。没配置时接口不启用，避免无鉴权写入。 */
 export function checkApiKey(header: string | null): { ok: true } | { ok: false; status: number; error: string } {
   const expected = process.env.VERDICT_API_KEY?.trim();
-  if (!expected) return { ok: false, status: 503, error: '没有配置 VERDICT_API_KEY，订单推送接口未启用' };
+  if (!expected) return { ok: false, status: 503, error: 'VERDICT_API_KEY is not set; the order push API is disabled' };
   const match = /^Bearer\s+(.+)$/i.exec(header ?? '');
   const given = Buffer.from(match?.[1]?.trim() ?? '');
   const want = Buffer.from(expected);
-  if (given.length !== want.length || !crypto.timingSafeEqual(given, want)) return { ok: false, status: 401, error: 'API 密钥无效' };
+  if (given.length !== want.length || !crypto.timingSafeEqual(given, want)) return { ok: false, status: 401, error: 'Invalid API key' };
   return { ok: true };
 }

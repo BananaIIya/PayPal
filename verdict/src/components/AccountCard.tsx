@@ -13,22 +13,22 @@ export function AccountCard({ name, email, role }: { name: string; email: string
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (next !== confirm) return setMessage({ ok: false, text: '两次输入的新密码不一样' });
+    if (next !== confirm) return setMessage({ ok: false, text: 'New passwords do not match' });
     setBusy(true);
     setMessage(null);
     try {
       const res = await fetch('/api/auth/password', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current, next }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMessage({ ok: false, text: body.error ?? '修改失败' });
+        setMessage({ ok: false, text: body.error ?? 'Could not change password' });
         return;
       }
       setCurrent('');
       setNext('');
       setConfirm('');
-      setMessage({ ok: true, text: '密码已修改，其他设备上的登录已失效。' });
+      setMessage({ ok: true, text: 'Password changed. You have been signed out on other devices.' });
     } catch {
-      setMessage({ ok: false, text: '请求没有发出去，请重试' });
+      setMessage({ ok: false, text: 'Request failed to send. Try again.' });
     } finally {
       setBusy(false);
     }
@@ -36,28 +36,28 @@ export function AccountCard({ name, email, role }: { name: string; email: string
 
   return (
     <section className="card card-pad">
-      <h2>我的账号</h2>
+      <h2>My account</h2>
       <p className="small" style={{ marginBottom: 10 }}>
         {name} · {email} · {ROLE_LABEL[role]}
       </p>
       <form onSubmit={submit}>
         <input type="email" autoComplete="username" value={email} readOnly hidden />
         <label className="field">
-          当前密码
+          Current password
           <input type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
         </label>
         <div className="settings-grid">
           <label className="field">
-            新密码（至少 10 位）
+            New password (at least 10 characters)
             <input type="password" autoComplete="new-password" required minLength={10} value={next} onChange={(e) => setNext(e.target.value)} />
           </label>
           <label className="field">
-            再输一次
+            Confirm new password
             <input type="password" autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
           </label>
         </div>
         <button className="btn" disabled={busy}>
-          {busy ? '保存中…' : '修改密码'}
+          {busy ? 'Saving…' : 'Change password'}
         </button>
       </form>
       {message && (

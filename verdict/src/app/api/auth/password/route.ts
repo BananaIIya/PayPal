@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 
 /** 用邀请或重置链接设置密码，成功后直接登录。 */
 export async function POST(req: NextRequest) {
-  if (isCrossSite(req)) return NextResponse.json({ error: '拒绝跨站请求' }, { status: 403 });
+  if (isCrossSite(req)) return NextResponse.json({ error: 'Cross-site request rejected' }, { status: 403 });
   const limited = limitAuth(req);
   if (limited) return limited;
   await ready();

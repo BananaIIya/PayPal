@@ -3,10 +3,10 @@
 import { useState } from 'react';
 
 const TOOLS = [
-  { tool: 'require_evidence', value: 'SELLER_EVIDENCE', label: '要求商家举证', link: 'requireEvidence' },
-  { tool: 'require_evidence', value: 'BUYER_EVIDENCE', label: '要求买家举证', link: 'requireEvidence' },
-  { tool: 'adjudicate', value: 'SELLER_FAVOR', label: '裁决：商家胜', link: 'adjudicate' },
-  { tool: 'adjudicate', value: 'BUYER_FAVOR', label: '裁决：买家胜', link: 'adjudicate' },
+  { tool: 'require_evidence', value: 'SELLER_EVIDENCE', label: 'Require seller evidence', link: 'requireEvidence' },
+  { tool: 'require_evidence', value: 'BUYER_EVIDENCE', label: 'Require buyer evidence', link: 'requireEvidence' },
+  { tool: 'adjudicate', value: 'SELLER_FAVOR', label: 'Decide for seller', link: 'adjudicate' },
+  { tool: 'adjudicate', value: 'BUYER_FAVOR', label: 'Decide for buyer', link: 'adjudicate' },
 ] as const;
 
 export function SandboxTools(p: {
@@ -19,7 +19,7 @@ export function SandboxTools(p: {
   const available = TOOLS.filter((t) => p.links[t.link]);
 
   async function run(t: (typeof TOOLS)[number]) {
-    if (!window.confirm(`在 PayPal 沙箱里执行“${t.label}”？这会改变这笔争议的状态，无法撤回。`)) return;
+    if (!window.confirm(`Run "${t.label}" in the PayPal sandbox? This changes the dispute's status and cannot be undone.`)) return;
     setBusy(true);
     setError(null);
     try {
@@ -29,10 +29,10 @@ export function SandboxTools(p: {
         body: JSON.stringify({ claimId: p.claimId, tool: t.tool, value: t.value, confirm: true }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) setError(body.error ?? '执行失败');
+      if (!res.ok) setError(body.error ?? 'Action failed');
       await p.onDone();
     } catch {
-      setError('请求没有发出去，请重试');
+      setError('Request failed to send. Try again.');
     } finally {
       setBusy(false);
     }
@@ -40,12 +40,12 @@ export function SandboxTools(p: {
 
   return (
     <section className="card card-pad no-print">
-      <h2>沙箱测试工具</h2>
+      <h2>Sandbox test tools</h2>
       <p className="muted small" style={{ marginBottom: 10 }}>
-        PayPal 只在沙箱提供这些接口，用来把争议推进到要测试的状态。
+        PayPal offers these endpoints only in the sandbox, to move a dispute to the state you want to test.
       </p>
       {available.length === 0 ? (
-        <p className="muted small">PayPal 现在没有给这笔争议提供测试接口，所以这里不能手动推进。</p>
+        <p className="muted small">PayPal offers no test endpoints for this dispute right now, so it cannot be moved forward manually.</p>
       ) : (
         <div className="row">
           {available.map((t) => (

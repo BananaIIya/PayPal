@@ -8,7 +8,7 @@ import type {
   Strength,
 } from './types';
 
-export const RULES_VERSION = 'mvp-2026-11-07';
+export const RULES_VERSION = 'mvp-2026-11-08';
 
 export const SOURCE_LAYER: Record<SourceMark, Layer> = {
   paypal_record: 'A',
@@ -24,16 +24,16 @@ export const SOURCE_LAYER: Record<SourceMark, Layer> = {
 };
 
 export const SOURCE_LABEL: Record<SourceMark, string> = {
-  paypal_record: 'PayPal 记录',
-  carrier_api: '物流接口',
-  listing_snapshot: '下单时商品快照',
-  reference: '商家留底',
-  live_capture: '挑战码已核对',
-  challenge_pending: '挑战拍摄，待核验',
-  paypal_dispute: 'PayPal 争议附件',
-  uploaded: '相册上传',
-  manual_import: '商家手动导入',
-  narrative: '文字陈述',
+  paypal_record: 'PayPal record',
+  carrier_api: 'Carrier API',
+  listing_snapshot: 'Listing snapshot at order time',
+  reference: 'Shipment reference',
+  live_capture: 'Challenge code verified',
+  challenge_pending: 'Challenge capture, pending verification',
+  paypal_dispute: 'PayPal dispute attachment',
+  uploaded: 'Gallery upload',
+  manual_import: 'Merchant manual import',
+  narrative: 'Written statement',
 };
 
 export const DEFAULT_CONFIG: EngineConfig = {
@@ -61,10 +61,10 @@ export const DEFAULT_CONFIG: EngineConfig = {
  * 保存时展开成每个来源的权重。
  */
 export const LAYER_WEIGHT_GROUPS = {
-  ab: { label: 'A、B 层（系统记录、现场拍摄）', sources: ['paypal_record', 'carrier_api', 'listing_snapshot', 'reference', 'live_capture'] },
-  cPaypal: { label: 'C 层：PayPal 争议附件', sources: ['paypal_dispute'] },
-  cUploaded: { label: 'C 层：相册上传、商家导入、待核验的挑战拍摄', sources: ['uploaded', 'manual_import', 'challenge_pending'] },
-  d: { label: 'D 层：文字陈述', sources: ['narrative'] },
+  ab: { label: 'Tiers A and B (system records, live capture)', sources: ['paypal_record', 'carrier_api', 'listing_snapshot', 'reference', 'live_capture'] },
+  cPaypal: { label: 'Tier C: PayPal dispute attachments', sources: ['paypal_dispute'] },
+  cUploaded: { label: 'Tier C: gallery uploads, merchant imports, unverified challenge captures', sources: ['uploaded', 'manual_import', 'challenge_pending'] },
+  d: { label: 'Tier D: written statements', sources: ['narrative'] },
 } as const satisfies Record<string, { label: string; sources: SourceMark[] }>;
 export type LayerGroup = keyof typeof LAYER_WEIGHT_GROUPS;
 
@@ -99,25 +99,25 @@ export function isDefaultConfig(cfg: EngineConfig): boolean {
 
 /** 写进审计记录的一行权重配置。早于这个字段的判定没有记录配置。 */
 export function describeConfig(cfg: EngineConfig | undefined): string {
-  if (!cfg) return '这次判定没有记录权重配置（早于设置页可编辑的版本）';
+  if (!cfg) return 'No weight configuration was recorded for this verdict (predates editable settings)';
   const s = cfg.strengthWeight;
   const l = layerWeights(cfg);
   return [
-    cfg.scope ? `类目“${CATEGORY_LABEL[cfg.scope] ?? cfg.scope}”专用配置` : isDefaultConfig(cfg) ? '默认配置' : '商家自定义',
-    `强度 ${s.strong}/${s.moderate}/${s.weak}`,
-    `层级 ${l.ab}/${l.cPaypal}/${l.cUploaded}/${l.d}`,
-    `风险阈值 ${cfg.riskMedium}/${cfg.riskHigh}`,
+    cfg.scope ? `Category config: ${CATEGORY_LABEL[cfg.scope] ?? cfg.scope}` : isDefaultConfig(cfg) ? 'Default config' : 'Custom merchant config',
+    `Strength ${s.strong}/${s.moderate}/${s.weak}`,
+    `Tiers ${l.ab}/${l.cPaypal}/${l.cUploaded}/${l.d}`,
+    `Risk thresholds ${cfg.riskMedium}/${cfg.riskHigh}`,
     `Q≥${cfg.minDataConfidence}`,
     `M≥${cfg.merchantRiskHigh}`,
   ].join(' · ');
 }
 
 export const CATEGORY_LABEL: Record<string, string> = {
-  ceramics: '陶瓷',
-  electronics: '电子产品',
-  apparel: '服装',
-  fresh: '生鲜',
-  general: '其他',
+  ceramics: 'Ceramics',
+  electronics: 'Electronics',
+  apparel: 'Apparel',
+  fresh: 'Fresh food',
+  general: 'Other',
 };
 
 /**
@@ -157,33 +157,33 @@ export const MEDIUM_FLOOR_CODES = new Set([
 ]);
 
 export const CLAIM_TYPE_LABEL: Record<ClaimType, string> = {
-  not_received: '未收到货',
-  damaged: '损坏',
-  not_as_described: '与描述不符',
-  missing_items: '少件或空箱',
-  return: '退货纠纷',
+  not_received: 'Not received',
+  damaged: 'Damaged',
+  not_as_described: 'Not as described',
+  missing_items: 'Missing items or empty box',
+  return: 'Return dispute',
 };
 
 export const SHOT_LABEL: Record<string, string> = {
-  overall: '商品整体照',
-  damage_closeup: '损坏部位近景',
-  difference_closeup: '差异部位近景',
-  package: '外包装',
-  label: '面单特写',
-  serial_closeup: '序列号特写',
-  contents: '箱内全部物品',
-  chat_screenshot: '聊天截图',
-  receipt: '收据或单据',
+  overall: 'Whole item',
+  damage_closeup: 'Damage close-up',
+  difference_closeup: 'Difference close-up',
+  package: 'Outer packaging',
+  label: 'Shipping label close-up',
+  serial_closeup: 'Serial number close-up',
+  contents: 'All box contents',
+  chat_screenshot: 'Chat screenshot',
+  receipt: 'Receipt or document',
 };
 
 export const SHOT_HINT: Record<string, string> = {
-  overall: '把商品完整放进取景框，光线充足',
-  damage_closeup: '靠近问题部位拍摄，让细节清晰',
-  difference_closeup: '拍清与商品描述不一致的地方',
-  package: '拍外包装，有破损的面朝向镜头',
-  label: '对准物流面单，让单号可读',
-  serial_closeup: '对准序列号或批次号，让字符可读',
-  contents: '把箱内所有物品摊开，一次拍全',
+  overall: 'Fit the whole item in the frame, with good lighting',
+  damage_closeup: 'Move close to the problem area so details are clear',
+  difference_closeup: 'Clearly show what differs from the listing',
+  package: 'Photograph the outer packaging with any damaged side facing the camera',
+  label: 'Aim at the shipping label so the tracking number is readable',
+  serial_closeup: 'Aim at the serial or batch number so the characters are readable',
+  contents: 'Spread out everything in the box and capture it all in one shot',
 };
 
 const BASE_REQUIRED_SHOTS: Record<ClaimType, string[]> = {
@@ -253,22 +253,22 @@ export const PROPOSITIONS: Record<ClaimType, PropositionDef[]> = {
   not_received: [
     {
       id: 'delivered',
-      label: '包裹是否已交付',
+      label: 'Package was delivered',
       key: true,
       holdsBy: ['DELIVERED_CONFIRMED', 'DELIVERY_ADDRESS_MISMATCH'],
       refutedBy: ['SHIPPED_BEFORE_ORDER'],
     },
     {
       id: 'address_match',
-      label: '签收地址是否为订单地址',
+      label: 'Delivery address is the order address',
       key: true,
       holdsBy: ['DELIVERED_CONFIRMED'],
       refutedBy: ['DELIVERY_ADDRESS_MISMATCH'],
     },
-    { id: 'buyer_obtained', label: '买家是否实际取得（排除代收、投递错误、被盗）', key: false },
+    { id: 'buyer_obtained', label: 'Buyer actually obtained it (rules out proxy receipt, misdelivery, theft)', key: false },
     {
       id: 'receipt_statement',
-      label: '后续消息中是否出现已收货的表述',
+      label: 'Later messages say the item was received',
       key: false,
       holdsBy: ['NARRATIVE_EVIDENCE_CONFLICT'],
     },
@@ -276,66 +276,66 @@ export const PROPOSITIONS: Record<ClaimType, PropositionDef[]> = {
   damaged: [
     {
       id: 'damage_exists',
-      label: '损坏是否存在',
+      label: 'Damage exists',
       key: true,
       requiredShots: ['damage_closeup'],
       refutedBy: ['PHYSICALLY_IMPLAUSIBLE', 'SCREEN_RECAPTURE', 'SYNTHETIC_LIKELY', 'AI_PROVENANCE_FOUND'],
     },
     {
       id: 'is_order_item',
-      label: '受损物是否为本订单商品',
+      label: "Damaged item is this order's item",
       key: identityKey,
       holdsBy: ['IDENTITY_MATCH'],
       refutedBy: ['IDENTITY_MISMATCH', 'DETAIL_ALTERED', 'EVIDENCE_REUSED_ACROSS_CLAIMS'],
     },
-    { id: 'damaged_at_delivery', label: '交付时是否已经损坏', key: false, requiredShots: ['package'] },
+    { id: 'damaged_at_delivery', label: 'Already damaged at delivery', key: false, requiredShots: ['package'] },
     {
       id: 'pattern_matches_shipping',
-      label: '损坏形态与运输方式是否吻合',
+      label: 'Damage pattern fits the shipping method',
       key: false,
       holdsWhenClean: 'plausibility',
       refutedBy: ['PHYSICALLY_IMPLAUSIBLE', 'DAMAGE_CAUSE_MISMATCH'],
     },
-    { id: 'suitable_for_return', label: '商品是否适宜退回', key: false, policyField: 'returnable' },
+    { id: 'suitable_for_return', label: 'Item is suitable for return', key: false, policyField: 'returnable' },
   ],
   not_as_described: [
     {
       id: 'matches_snapshot',
-      label: '实物与下单时商品快照是否一致',
+      label: 'Item matches the listing snapshot at order time',
       key: true,
       holdsBy: ['SNAPSHOT_MATCH', 'IDENTITY_MATCH'],
       refutedBy: ['SNAPSHOT_DIFFERENCE', 'IDENTITY_MISMATCH'],
     },
-    { id: 'affects_core', label: '差异是否影响核心功能', key: false },
+    { id: 'affects_core', label: 'Difference affects core function', key: false },
   ],
   missing_items: [
     {
       id: 'shipped_contents',
-      label: '发货内容与数量',
+      label: 'Shipped contents and quantity',
       key: true,
       coveredBySources: ['reference'],
       refutedBy: ['WEIGHT_SHORTFALL'],
     },
     {
       id: 'weights_consistent',
-      label: '各节点包裹重量是否一致',
+      label: 'Package weight is consistent across checkpoints',
       key: true,
       holdsBy: ['WEIGHT_MISMATCH'],
       refutedBy: ['WEIGHT_SHORTFALL'],
     },
-    { id: 'unboxing_continuous', label: '开箱过程是否连续', key: false, requiredShots: ['contents'] },
+    { id: 'unboxing_continuous', label: 'Unboxing is continuous', key: false, requiredShots: ['contents'] },
   ],
   return: [
     {
       id: 'return_delivered',
-      label: '退回包裹是否寄出并送达',
+      label: 'Return package was shipped and delivered',
       key: true,
       holdsBy: ['DELIVERED_CONFIRMED'],
       refutedBy: ['DELIVERY_ADDRESS_MISMATCH'],
     },
     {
       id: 'returned_is_original',
-      label: '退回物是否为原商品（序列号、重量、磨损）',
+      label: 'Returned item is the original (serial number, weight, wear)',
       key: true,
       holdsBy: ['IDENTITY_MATCH'],
       refutedBy: ['IDENTITY_MISMATCH', 'WEIGHT_MISMATCH'],
@@ -344,98 +344,98 @@ export const PROPOSITIONS: Record<ClaimType, PropositionDef[]> = {
 };
 
 export const SIGNAL_TITLE: Record<string, string> = {
-  AI_PROVENANCE_FOUND: '文件声明由 AI 从零生成',
-  PROVENANCE_CLAIM_UNVERIFIED: '来源声明未验证，需要原图或补充证据',
-  NO_PROVENANCE: '未发现来源凭证',
-  C2PA_MANIFEST_UNVERIFIED: '存在内容凭证，未判定为 AI 生成',
-  SYNTHETIC_LIKELY: 'AI 生成检测概率偏高',
-  DETECTORS_DISAGREE: '检测器之间结论分歧',
-  CROSS_EVIDENCE_CONTRADICTION: '多份证据之间相互矛盾',
-  NARRATIVE_EVIDENCE_CONFLICT: '文字陈述与证据不一致',
-  CHALLENGE_MISSING: '画面中没有识别到挑战码',
-  CHALLENGE_MISMATCH: '画面中的挑战码与下发的不符',
-  CHALLENGE_MATCHED: '画面中的挑战码与下发的一致',
-  CHALLENGE_UNVERIFIED: '挑战码未能核验',
-  PHYSICALLY_IMPLAUSIBLE: '损坏形态不符合材料常识',
-  SCREEN_RECAPTURE: '疑似对着屏幕翻拍',
-  DAMAGE_CAUSE_MISMATCH: '损坏与声称原因不吻合',
-  IDENTITY_MISMATCH: '商品身份特征与留底不符',
-  DETAIL_ALTERED: '商品细节与留底有差异',
-  IDENTITY_MATCH: '商品身份特征与留底一致',
-  SNAPSHOT_DIFFERENCE: '实物与下单时快照有差异',
-  SNAPSHOT_MATCH: '实物与下单时快照一致',
-  SNAPSHOT_UNVERIFIED: '实物与下单快照无法核对',
-  IMAGE_FOUND_ONLINE: '网上存在更早的相同图片',
-  EVIDENCE_REUSED_ACROSS_CLAIMS: '同一张图出现在其他索赔中',
-  DELIVERED_CONFIRMED: '物流显示已签收到订单地址',
-  DELIVERY_ADDRESS_UNVERIFIED: '已签收，但无法核对是否为订单地址',
-  DELIVERY_ADDRESS_MISMATCH: '签收地址与订单地址不一致',
-  SHIPPED_BEFORE_ORDER: '物流事件早于下单时间',
-  TRACKING_NOT_DELIVERED: '物流尚未显示签收',
-  TRACKING_STATUS_UNKNOWN: '物流状态不明',
-  WEIGHT_MISMATCH: '称重与买家声称的内容不符',
-  WEIGHT_SHORTFALL: '称重低于商品理论重量',
-  RECORD_NOT_FOUND: '单据中的订单在交易记录里查不到',
-  SCREENSHOT_CONTENT_MISMATCH: '截图内容与消息记录不符',
-  HIGH_CLAIM_FREQUENCY: '该买家索赔频率偏高',
-  SCRIPTED_NARRATIVE: '索赔文本与其他索赔高度相似',
-  SKU_CLAIM_CLUSTER: '同 SKU 同理由索赔聚集',
-  LINKED_ACCOUNTS: '存在共用收货地址的账户',
-  VIDEO_EDITED: '视频经过剪辑软件处理',
-  VIDEO_DISCONTINUITY: '现场录制的视频中有画面突变',
+  AI_PROVENANCE_FOUND: 'File declares it was fully AI-generated',
+  PROVENANCE_CLAIM_UNVERIFIED: 'Unverified provenance claim; original photo or more evidence needed',
+  NO_PROVENANCE: 'No provenance credentials found',
+  C2PA_MANIFEST_UNVERIFIED: 'Content credentials present, not marked as AI-generated',
+  SYNTHETIC_LIKELY: 'High AI-generation detection score',
+  DETECTORS_DISAGREE: 'Detectors disagree',
+  CROSS_EVIDENCE_CONTRADICTION: 'Evidence items contradict each other',
+  NARRATIVE_EVIDENCE_CONFLICT: 'Statement conflicts with evidence',
+  CHALLENGE_MISSING: 'No challenge code found in frame',
+  CHALLENGE_MISMATCH: 'Challenge code in frame does not match the one issued',
+  CHALLENGE_MATCHED: 'Challenge code in frame matches the one issued',
+  CHALLENGE_UNVERIFIED: 'Challenge code could not be verified',
+  PHYSICALLY_IMPLAUSIBLE: 'Damage pattern is implausible for the material',
+  SCREEN_RECAPTURE: 'Possibly photographed from a screen',
+  DAMAGE_CAUSE_MISMATCH: 'Damage does not fit the claimed cause',
+  IDENTITY_MISMATCH: 'Item identifiers do not match the shipment reference',
+  DETAIL_ALTERED: 'Item details differ from the shipment reference',
+  IDENTITY_MATCH: 'Item identifiers match the shipment reference',
+  SNAPSHOT_DIFFERENCE: 'Item differs from the listing snapshot at order time',
+  SNAPSHOT_MATCH: 'Item matches the listing snapshot at order time',
+  SNAPSHOT_UNVERIFIED: 'Item cannot be checked against the listing snapshot',
+  IMAGE_FOUND_ONLINE: 'Same image found online earlier',
+  EVIDENCE_REUSED_ACROSS_CLAIMS: 'Same image appears in another claim',
+  DELIVERED_CONFIRMED: 'Tracking shows delivered to the order address',
+  DELIVERY_ADDRESS_UNVERIFIED: 'Delivered, but cannot confirm it was the order address',
+  DELIVERY_ADDRESS_MISMATCH: 'Delivery address does not match the order address',
+  SHIPPED_BEFORE_ORDER: 'Tracking events predate the order',
+  TRACKING_NOT_DELIVERED: 'Tracking does not show delivery yet',
+  TRACKING_STATUS_UNKNOWN: 'Tracking status unknown',
+  WEIGHT_MISMATCH: "Weight does not match the buyer's claim",
+  WEIGHT_SHORTFALL: 'Weight is below the expected item weight',
+  RECORD_NOT_FOUND: 'Order on the document not found in transaction records',
+  SCREENSHOT_CONTENT_MISMATCH: 'Screenshot does not match message history',
+  HIGH_CLAIM_FREQUENCY: 'Buyer files claims unusually often',
+  SCRIPTED_NARRATIVE: 'Claim text closely matches other claims',
+  SKU_CLAIM_CLUSTER: 'Cluster of same-reason claims on one SKU',
+  LINKED_ACCOUNTS: 'Other accounts share the shipping address',
+  VIDEO_EDITED: 'Video was processed with editing software',
+  VIDEO_DISCONTINUITY: 'Abrupt cuts in live-recorded video',
 };
 
 /** 每个强信号附上的常见正常解释（开发文档“处置约束”）。 */
 export const NORMAL_EXPLANATIONS: Record<string, string[]> = {
   AI_PROVENANCE_FOUND: [
-    '买家可能误传了用 AI 生成的示意图，而不是实拍照片；可以给一次补交实拍原图的机会',
-    '清单签名尚未核验，但 AI 修图会记为编辑而不是从零生成，不会触发这一条',
+    'The buyer may have uploaded an AI-generated illustration by mistake instead of a real photo; you can give them one chance to resubmit the original photo',
+    'The manifest signature has not been verified, but AI retouching is recorded as an edit, not as fully generated, and does not trigger this',
   ],
   PROVENANCE_CLAIM_UNVERIFIED: [
-    '买家可能只是用 AI 工具圈出了瑕疵位置，此时请买家提供未经编辑的原图',
-    '手机相册的 AI 修图、去背景等功能也会写入这类标识',
-    '清单可能被重新编码去掉，没有这份声明也不等于照片真实',
+    'The buyer may have only used an AI tool to circle the defect; in that case, ask for the unedited original photo',
+    'AI retouching and background removal in phone galleries also write this kind of label',
+    'Manifests can be stripped by re-encoding, so the absence of this claim does not mean a photo is authentic',
   ],
-  IDENTITY_MISMATCH: ['仓库可能错发了同款的另一件商品', '留底或拍摄时可能存在扫描、识别错误'],
-  EVIDENCE_REUSED_ACROSS_CLAIMS: ['同一买家可能在补充同一笔售后的材料', '图片也可能是商家自有素材'],
-  IMAGE_FOUND_ONLINE: ['图片可能来自商家自己发布的商品图', '买家可能引用了网上的图片作说明'],
-  CROSS_EVIDENCE_CONTRADICTION: ['多张图可能拍摄于不同时间或不同包裹', '视频剪辑可能是为了保护隐私或压缩文件'],
-  RECORD_NOT_FOUND: ['买家可能输错了订单号', '订单可能来自其他店铺或其他账户'],
-  SCREENSHOT_CONTENT_MISMATCH: ['对话可能发生在消息库未接入的渠道，例如私人邮箱', '客服可能在其他系统中答复过买家'],
-  DELIVERED_CONFIRMED: ['签收只证明交付状态：可能是代收、投递错误或被盗', '请结合买家后续消息判断是否实际取得'],
-  DELIVERY_ADDRESS_MISMATCH: ['收件人可能改过地址或选择了自提点', '物流公司的邮编记录可能有误'],
-  SYNTHETIC_LIKELY: ['检测器存在误报，压缩、强降噪或美颜也可能抬高分数'],
-  SCREEN_RECAPTURE: ['买家可能在电脑上查看原图后转拍，请其直接拍摄实物'],
-  NARRATIVE_EVIDENCE_CONFLICT: ['买家可能描述不准确，或在拍摄前已经打开查看'],
-  WEIGHT_MISMATCH: ['包装材料和称重误差会造成差异', '发货后也可能在运输途中丢失内件'],
-  HIGH_CLAIM_FREQUENCY: ['批量采购的买家售后次数自然更多'],
-  LINKED_ACCOUNTS: ['家庭、宿舍、公司集中收货属正常情况，只作线索'],
-  VIDEO_EDITED: ['视频剪辑可能是为了保护隐私或压缩文件', '一些手机相册的导出、压缩功能也会写入软件名'],
-  VIDEO_DISCONTINUITY: ['镜头快速移动、遮挡或光线突变也会被识别为画面切换', '请对照抽出的帧确认前后是否是同一件商品'],
+  IDENTITY_MISMATCH: ['The warehouse may have shipped another unit of the same product', 'The reference or capture may have a scanning or recognition error'],
+  EVIDENCE_REUSED_ACROSS_CLAIMS: ['The same buyer may be adding material to the same after-sales case', "The image may be the merchant's own asset"],
+  IMAGE_FOUND_ONLINE: ["The image may come from the merchant's own product photos", 'The buyer may have used an online image for illustration'],
+  CROSS_EVIDENCE_CONTRADICTION: ['The photos may have been taken at different times or of different packages', 'Video edits may be for privacy or file compression'],
+  RECORD_NOT_FOUND: ['The buyer may have mistyped the order number', 'The order may be from another store or account'],
+  SCREENSHOT_CONTENT_MISMATCH: ['The conversation may have happened on a channel not connected to the message store, such as personal email', 'An agent may have replied to the buyer in another system'],
+  DELIVERED_CONFIRMED: ['Delivery only proves delivery status: it could be proxy receipt, misdelivery, or theft', "Check the buyer's later messages to judge whether they actually got it"],
+  DELIVERY_ADDRESS_MISMATCH: ['The recipient may have changed the address or chosen a pickup point', "The carrier's postal code record may be wrong"],
+  SYNTHETIC_LIKELY: ['Detectors produce false positives; compression, heavy noise reduction, or beauty filters can also raise the score'],
+  SCREEN_RECAPTURE: ['The buyer may have viewed the original on a computer and photographed the screen; ask them to photograph the item directly'],
+  NARRATIVE_EVIDENCE_CONFLICT: ['The buyer may have described it inaccurately, or opened it to look before taking photos'],
+  WEIGHT_MISMATCH: ['Packaging materials and scale error cause differences', 'Contents may also have been lost in transit after shipping'],
+  HIGH_CLAIM_FREQUENCY: ['Bulk buyers naturally file more after-sales requests'],
+  LINKED_ACCOUNTS: ['Shared delivery to a household, dorm, or office is normal; treat this as a lead only'],
+  VIDEO_EDITED: ['Video edits may be for privacy or file compression', 'Some phone gallery export and compression features also write a software name'],
+  VIDEO_DISCONTINUITY: ['Fast camera movement, occlusion, or sudden lighting changes can also register as scene cuts', 'Compare the extracted frames to confirm it is the same item before and after'],
 };
 
-export const STRENGTH_LABEL: Record<Strength, string> = { strong: '强', moderate: '中', weak: '弱' };
+export const STRENGTH_LABEL: Record<Strength, string> = { strong: 'strong', moderate: 'moderate', weak: 'weak' };
 
 export const ANALYZER_LABEL: Record<AnalyzerName, { name: string; what: string }> = {
-  provenance: { name: 'Provenance', what: '内容凭证、AI 标识与视频剪辑痕迹' },
-  synthetic: { name: 'Synthetic', what: 'AI 生成检测器' },
-  origin: { name: 'Origin', what: '历史证据与反向搜图' },
-  consistency: { name: 'Consistency', what: '跨证据与陈述比对' },
-  plausibility: { name: 'Plausibility', what: '物理常识与翻拍' },
-  reference: { name: 'Reference', what: '留底与商品快照比对' },
-  logistics: { name: 'Logistics', what: '物流轨迹与称重' },
-  records: { name: 'Records', what: '交易与消息记录核对' },
-  behavior: { name: 'Behavior', what: '买家历史与聚集度' },
+  provenance: { name: 'Provenance', what: 'Content credentials, AI labels, and video edit traces' },
+  synthetic: { name: 'Synthetic', what: 'AI-generation detectors' },
+  origin: { name: 'Origin', what: 'Prior evidence and reverse image search' },
+  consistency: { name: 'Consistency', what: 'Cross-evidence and statement comparison' },
+  plausibility: { name: 'Plausibility', what: 'Physical plausibility and screen recapture' },
+  reference: { name: 'Reference', what: 'Shipment reference and listing snapshot comparison' },
+  logistics: { name: 'Logistics', what: 'Tracking and weight' },
+  records: { name: 'Records', what: 'Transaction and message record checks' },
+  behavior: { name: 'Behavior', what: 'Buyer history and clustering' },
 };
 
-export const LEVEL_LABEL = { low: '低风险', medium: '中风险', high: '高风险', insufficient: '证据不足' } as const;
+export const LEVEL_LABEL = { low: 'Low risk', medium: 'Medium risk', high: 'High risk', insufficient: 'Insufficient evidence' } as const;
 
 export const STATUS_LABEL = {
-  collecting: '等待买家提交',
-  analyzing: '分析中',
-  awaiting_decision: '待商家决定',
-  action_sent: '动作已发送',
-  closed: '已结案',
+  collecting: 'Waiting for buyer',
+  analyzing: 'Analyzing',
+  awaiting_decision: 'Awaiting decision',
+  action_sent: 'Action sent',
+  closed: 'Closed',
 } as const;
 
-export const ORIGIN_LABEL = { paypal_dispute: 'PayPal 争议', portal: '索赔页', manual_import: '手动导入' } as const;
+export const ORIGIN_LABEL = { paypal_dispute: 'PayPal dispute', portal: 'Claim page', manual_import: 'Manual import' } as const;

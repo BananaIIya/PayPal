@@ -11,9 +11,9 @@ export function fmtDateTime(iso: string): string {
 export function dueLabel(iso: string | null): { text: string; soon: boolean } {
   if (!iso) return { text: '—', soon: false };
   const hours = (new Date(iso).getTime() - Date.now()) / 3600000;
-  if (hours < 0) return { text: '已过期', soon: true };
-  if (hours < 48) return { text: `${Math.round(hours)} 小时后`, soon: true };
-  return { text: `${Math.round(hours / 24)} 天后`, soon: false };
+  if (hours < 0) return { text: 'Overdue', soon: true };
+  if (hours < 48) return { text: `in ${Math.round(hours)} h`, soon: true };
+  return { text: `in ${Math.round(hours / 24)} days`, soon: false };
 }
 
 export function fmtScore(n: number | null | undefined): string {

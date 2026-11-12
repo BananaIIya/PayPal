@@ -39,7 +39,7 @@ function importOrder(view: DisputeView): OrderRow {
       `SB-${view.id}`,
       view.transactionIds[0] ?? null,
       view.buyerName,
-      JSON.stringify([{ sku: item?.id ?? 'UNKNOWN', title: item?.title ?? 'PayPal 沙箱交易', quantity: item?.quantity ?? 1 }]),
+      JSON.stringify([{ sku: item?.id ?? 'UNKNOWN', title: item?.title ?? 'PayPal sandbox transaction', quantity: item?.quantity ?? 1 }]),
       view.amount ?? 0,
       view.currency ?? 'USD',
       nowIso(),
@@ -76,12 +76,12 @@ function updateExisting(claim: ClaimRow, view: DisputeView): UpsertResult {
   storeDisputeFields(claim.id, view);
 
   if (statusChanged && claim.paypal_status) {
-    addTimeline(claim.id, 'dispute', 'PayPal 争议状态更新', `${claim.paypal_status} → ${view.status}（${view.stage}）`);
+    addTimeline(claim.id, 'dispute', 'PayPal dispute status updated', `${claim.paypal_status} → ${view.status} (${view.stage})`);
   }
   if (view.status === 'RESOLVED') {
     if (claim.status !== 'closed') {
       conn.prepare("UPDATE claims SET status = 'closed' WHERE id = ?").run(claim.id);
-      addTimeline(claim.id, 'dispute', 'PayPal 争议已结案', view.outcome ?? undefined);
+      addTimeline(claim.id, 'dispute', 'PayPal dispute closed', view.outcome ?? undefined);
     }
   } else if (statusChanged && view.status === 'WAITING_FOR_SELLER_RESPONSE' && claim.status === 'action_sent') {
     // 只在状态真正变回“等商家”时才转回去。刚提交证据时 PayPal 的状态可能还没变，不能算回到商家这边。
@@ -97,8 +97,8 @@ function updateExisting(claim: ClaimRow, view: DisputeView): UpsertResult {
 }
 
 function skipReason(input: { reason?: string; status?: string }): string | null {
-  if (input.status === 'RESOLVED') return '这笔争议已结案';
-  if (input.reason && !CLAIM_TYPE_BY_REASON[input.reason]) return `Verdict 暂不处理 ${input.reason} 类型的争议，请到 PayPal 后台处理`;
+  if (input.status === 'RESOLVED') return 'This dispute is closed';
+  if (input.reason && !CLAIM_TYPE_BY_REASON[input.reason]) return `Verdict does not handle ${input.reason} disputes yet. Handle it in the PayPal dashboard`;
   return null;
 }
 
@@ -111,7 +111,7 @@ export function upsertClaimFromDispute(view: DisputeView): UpsertResult {
   const existing = conn.prepare('SELECT * FROM claims WHERE paypal_dispute_id = ?').get(view.id) as ClaimRow | undefined;
   if (existing) return updateExisting(existing, view);
   // 商家删除过这笔索赔的数据，争议后来又有更新（比如申诉）时不能悄悄导回来。
-  if (isDeletedDispute(view.id)) return { outcome: 'skipped', reason: '商家已删除这笔争议在 Verdict 里的数据' };
+  if (isDeletedDispute(view.id)) return { outcome: 'skipped', reason: 'The merchant deleted this dispute\'s data in Verdict' };
 
   const skip = skipReason(view);
   if (skip) return { outcome: 'skipped', reason: skip };
@@ -127,7 +127,7 @@ export function upsertClaimFromDispute(view: DisputeView): UpsertResult {
   if (open) {
     conn.prepare('UPDATE claims SET paypal_dispute_id = ? WHERE id = ?').run(view.id, open.id);
     storeDisputeFields(open.id, view);
-    addTimeline(open.id, 'dispute', 'PayPal 争议已关联', `${view.id}（${view.reason}）`);
+    addTimeline(open.id, 'dispute', 'PayPal dispute linked', `${view.id} (${view.reason})`);
     startAnalysis(open.id);
     return { outcome: 'linked', claimId: open.id };
   }
@@ -143,7 +143,7 @@ export function upsertClaimFromDispute(view: DisputeView): UpsertResult {
     status: 'analyzing',
   });
   storeDisputeFields(claimId, view);
-  addTimeline(claimId, 'dispute', '收到 PayPal 沙箱争议', `${view.id}（${view.reason}）`);
+  addTimeline(claimId, 'dispute', 'PayPal dispute received', `${view.id} (${view.reason})`);
   startAnalysis(claimId);
   return { outcome: 'created', claimId };
 }
@@ -152,16 +152,16 @@ export function upsertClaimFromDispute(view: DisputeView): UpsertResult {
 
 export async function handleSandboxWebhook(raw: string, headers: { get(name: string): string | null }): Promise<WebhookOutcome> {
   const client = getSandboxClient();
-  if (!client) return { status: 401, body: { error: 'PayPal 沙箱未配置' } };
+  if (!client) return { status: 401, body: { error: 'PayPal sandbox is not configured' } };
 
   let verified: boolean;
   try {
     verified = await client.verifyWebhook(raw, headers);
   } catch {
     // 验签接口暂时不可用。返回 5xx，让 PayPal 稍后重发。
-    return { status: 503, body: { error: '暂时无法验签' } };
+    return { status: 503, body: { error: 'Cannot verify the signature right now' } };
   }
-  if (!verified) return { status: 401, body: { error: '验签失败' } };
+  if (!verified) return { status: 401, body: { error: 'Signature verification failed' } };
 
   const event = JSON.parse(raw) as { id: string; event_type: string; resource?: { dispute_id?: string; id?: string; status?: string } };
   const disputeId = event.resource?.dispute_id ?? event.resource?.id ?? null;
@@ -183,7 +183,7 @@ export async function handleSandboxWebhook(raw: string, headers: { get(name: str
         if (status && status !== 'PENDING') applyRefundOutcome(refundId, status);
         else await refreshRefund(refundId);
       } catch {
-        return { status: 503, body: { error: '暂时无法确认退款结果' } };
+        return { status: 503, body: { error: 'Cannot confirm the refund result right now' } };
       }
     }
     markProcessed();
@@ -199,11 +199,11 @@ export async function handleSandboxWebhook(raw: string, headers: { get(name: str
     view = await client.getDispute(disputeId, { fresh: true });
   } catch {
     // 没有标记为已处理，PayPal 重发时会再处理一次。
-    return { status: 503, body: { error: '暂时无法读取争议详情' } };
+    return { status: 503, body: { error: 'Cannot read dispute details right now' } };
   }
   if (!view) {
     markProcessed();
-    return { status: 200, body: { ignored: true, reason: '争议不存在' } };
+    return { status: 200, body: { ignored: true, reason: 'Dispute not found' } };
   }
   const result = upsertClaimFromDispute(view);
   markProcessed();
@@ -235,7 +235,7 @@ export function lastSync(): SyncState | null {
 
 async function runSync(): Promise<SyncState> {
   const client = getSandboxClient();
-  if (!client) throw new Error('PayPal 沙箱未配置或配置有误');
+  if (!client) throw new Error('The PayPal sandbox is not configured or is misconfigured');
 
   const previous = lastSync();
   const startedAt = Date.now();
@@ -278,7 +278,7 @@ async function runSync(): Promise<SyncState> {
       }
     }
     if (complete) state.cursor = new Date(startedAt).toISOString();
-    else state.error = `争议超过 ${MAX_PAGES} 页，本轮没有处理完，下一轮继续。`;
+    else state.error = `Disputes exceed ${MAX_PAGES} pages. This run did not finish; the next run will continue.`;
     await settleProcessingRefunds();
   } catch (e) {
     // 游标不前进，下一轮会重新处理这段时间内的争议。
@@ -318,16 +318,16 @@ function applyRefundOutcome(refundId: string, status: string): void {
   if (status === 'COMPLETED') {
     const after =
       action.type === 'make_offer'
-        ? { status: 'action_sent', title: '商家提出和解' }
-        : { status: 'closed', title: '商家确认退款' };
+        ? { status: 'action_sent', title: 'Merchant made an offer' }
+        : { status: 'closed', title: 'Merchant confirmed refund' };
     db().prepare("UPDATE actions SET status = 'succeeded', paypal_response = ? WHERE id = ?").run(JSON.stringify(stored), action.id);
     db().prepare('UPDATE claims SET status = ? WHERE id = ?').run(after.status, action.claim_id);
-    addTimeline(action.claim_id, 'action', '退款已完成', after.title);
+    addTimeline(action.claim_id, 'action', 'Refund completed', after.title);
     return;
   }
   if (status === 'FAILED' || status === 'CANCELLED') {
     db().prepare("UPDATE actions SET status = 'failed', paypal_response = ? WHERE id = ?").run(JSON.stringify(stored), action.id);
-    addTimeline(action.claim_id, 'action', '退款未完成', `PayPal 退款状态为 ${status}，索赔没有结案`);
+    addTimeline(action.claim_id, 'action', 'Refund not completed', `PayPal refund status is ${status}. The claim was not closed`);
   }
 }
 

@@ -14,14 +14,14 @@ export function PayPalSyncButton() {
     try {
       const res = await fetch('/api/paypal/sync', { method: 'POST' });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) setResult(body.error ?? '同步失败');
+      if (!res.ok) setResult(body.error ?? 'Sync failed');
       else {
-        const skipped = body.skipped?.length ? `，跳过 ${body.skipped.length} 笔` : '';
-        setResult(`新增 ${body.created} 笔，更新 ${body.updated} 笔${skipped}`);
+        const skipped = body.skipped?.length ? `, ${body.skipped.length} skipped` : '';
+        setResult(`${body.created} new, ${body.updated} updated${skipped}`);
       }
       router.refresh();
     } catch {
-      setResult('请求没有发出去，请重试');
+      setResult('Request failed to send. Try again.');
     } finally {
       setBusy(false);
     }
@@ -31,7 +31,7 @@ export function PayPalSyncButton() {
     <>
       {result && <span className="muted small">{result}</span>}
       <button className="btn" disabled={busy} onClick={sync}>
-        {busy ? '同步中…' : '同步 PayPal 沙箱'}
+        {busy ? 'Syncing…' : 'Sync PayPal sandbox'}
       </button>
     </>
   );

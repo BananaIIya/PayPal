@@ -50,7 +50,7 @@ async function extractFresh(
   const hit = cacheGet<EvidenceAttributes>('vision', evidence.sha256);
   if (hit) return { provider: hit.provider, attrs: hit.result };
   const vision = opts.offline ? null : claudeVisionFromEnv();
-  if (!vision) throw new ProviderUnavailable('未配置多模态 LLM（LLM_PROVIDER、LLM_API_KEY）');
+  if (!vision) throw new ProviderUnavailable('No multimodal LLM configured (LLM_PROVIDER, LLM_API_KEY)');
   const attrs = await vision.extract(read(), evidence.mime_type, ctx);
   cachePut('vision', evidence.sha256, vision.name, attrs);
   return { provider: vision.name, attrs };
@@ -81,10 +81,10 @@ export function syntheticScores(sha256: string): { provider: string; entry: Synt
 
 /** 物流模拟器：读订单上预置的轨迹。真实接入时换成 EasyPost、Shippo 实现。 */
 export class SimulatedTracking implements TrackingProvider {
-  readonly name = '物流模拟器';
+  readonly name = 'Tracking simulator';
   constructor(private data: TrackingResult | null) {}
   async track(): Promise<TrackingResult> {
-    if (!this.data) throw new ProviderUnavailable('未配置物流接口（EASYPOST_API_KEY 或 SHIPPO_API_KEY），该单号也没有模拟轨迹');
+    if (!this.data) throw new ProviderUnavailable('No tracking API configured (EASYPOST_API_KEY or SHIPPO_API_KEY), and this tracking number has no simulated history');
     return this.data;
   }
 }
@@ -93,33 +93,33 @@ export function providerStatus() {
   const vision = claudeVisionFromEnv();
   return [
     {
-      category: 'C2PA 与 AI 隐式标识',
+      category: 'C2PA and implicit AI labels',
       state: 'active' as const,
-      detail: '本地字节级解析（检测清单与 AI 来源类型，不校验签名）',
+      detail: 'Local byte-level parsing (detects manifests and AI source types; does not verify signatures)',
     },
     {
-      category: '感知哈希比对',
+      category: 'Perceptual hash comparison',
       state: 'active' as const,
-      detail: '本地 256 位 dHash，比对本商家历史证据',
+      detail: "Local 256-bit dHash, compared against this merchant's prior evidence",
     },
     {
-      category: '多模态 LLM',
+      category: 'Multimodal LLM',
       state: vision ? ('active' as const) : ('off' as const),
-      detail: vision ? vision.name : '未配置 LLM_PROVIDER 与 LLM_API_KEY；真实照片的 Consistency、Plausibility、Reference、Records 不会运行',
+      detail: vision ? vision.name : 'LLM_PROVIDER and LLM_API_KEY not configured; Consistency, Plausibility, Reference, and Records will not run on real photos',
     },
     {
-      category: 'AI 生成检测器',
+      category: 'AI-generation detectors',
       state: 'off' as const,
-      detail: 'Hive、Sightengine、AI or Not 的适配器尚未接入；真实照片的 Synthetic 显示为未执行',
+      detail: 'Adapters for Hive, Sightengine, and AI or Not are not connected yet; Synthetic shows as not run for real photos',
     },
-    { category: 'SynthID 水印', state: 'off' as const, detail: '尚未接入' },
-    { category: '反向搜图', state: 'off' as const, detail: 'SerpAPI、TinEye 尚未接入' },
-    { category: '物流轨迹', state: 'simulated' as const, detail: '物流模拟器，轨迹来自订单上的演示数据' },
-    { category: 'PayPal', state: 'simulated' as const, detail: 'PayPal 模拟器，没有真实资金流动' },
+    { category: 'SynthID watermark', state: 'off' as const, detail: 'Not connected yet' },
+    { category: 'Reverse image search', state: 'off' as const, detail: 'SerpAPI and TinEye not connected yet' },
+    { category: 'Tracking', state: 'simulated' as const, detail: 'Tracking simulator; history comes from demo data on the order' },
+    { category: 'PayPal', state: 'simulated' as const, detail: 'PayPal simulator; no real money moves' },
   ];
 }
 
 export function dataProcessors(): string[] {
   const vision = claudeVisionFromEnv();
-  return vision ? ['Anthropic（Claude，用于识别画面内容）'] : [];
+  return vision ? ['Anthropic (Claude, for recognizing image content)'] : [];
 }

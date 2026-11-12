@@ -13,11 +13,11 @@ export async function POST(req: NextRequest) {
   if (auth instanceof NextResponse) return auth;
   const status = publicPayPalStatus();
   const client = getSandboxClient();
-  if (!client) return NextResponse.json({ ok: false, status, checks: [{ name: '配置', ok: false, detail: status.error ?? '还没有配置 PayPal 沙箱' }] });
+  if (!client) return NextResponse.json({ ok: false, status, checks: [{ name: 'Configuration', ok: false, detail: status.error ?? 'PayPal sandbox is not configured' }] });
   try {
     const checks = await client.checkConnection();
     return NextResponse.json({ ok: checks.every((c) => c.ok), status, checks });
   } catch (e) {
-    return NextResponse.json({ ok: false, status, checks: [{ name: '凭据', ok: false, detail: e instanceof Error ? e.message : String(e) }] });
+    return NextResponse.json({ ok: false, status, checks: [{ name: 'Credentials', ok: false, detail: e instanceof Error ? e.message : String(e) }] });
   }
 }

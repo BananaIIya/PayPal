@@ -20,7 +20,7 @@ export type ReportAudience = 'merchant' | 'paypal';
 
 export class ReportFontUnavailableError extends Error {
   constructor() {
-    super('找不到可以内嵌的中文字体，无法生成 PDF。请安装 Noto Sans CJK 或文泉驿正黑，或用 VERDICT_REPORT_FONT 指定字体文件。');
+    super('No embeddable CJK font found, so the PDF cannot be generated. Install Noto Sans CJK or WenQuanYi Zen Hei, or set VERDICT_REPORT_FONT to a font file.');
     this.name = 'ReportFontUnavailableError';
   }
 }
@@ -86,7 +86,7 @@ export function horizontalFeatures(): PDFKit.Mixins.OpenTypeFeatures[] {
 }
 
 // 只给商家看的操作记录。标题与 server/actions.ts、重新分析接口里写入时间线的文字一致，改那边时要一起改（有测试兜底）。
-const INTERNAL_TIMELINE_TITLES = new Set(['动作执行失败', '动作结果不明', '动作未生效（人工核对）', '沙箱测试工具', '商家请求重新分析']);
+const INTERNAL_TIMELINE_TITLES = new Set(['Action failed', 'Action result unknown', 'Action did not take effect (manual check)', 'Sandbox test tool', 'Merchant requested re-analysis']);
 
 /** 抽出的帧在视频里的时间（秒，一位小数）。 */
 const frameSeconds = (e: { captureMeta?: Record<string, unknown> | null }) => (Number(e.captureMeta?.atMs ?? 0) / 1000).toFixed(1);
@@ -99,10 +99,10 @@ export function visibleTimeline<T extends { kind: string; title: string; detail:
   if (audience === 'merchant') return timeline;
   return timeline
     .filter((t) => !INTERNAL_TIMELINE_TITLES.has(t.title))
-    .map((t) => (t.kind === 'action' ? { ...t, title: t.title.replace(/（人工核对）$/, ''), detail: null } : t));
+    .map((t) => (t.kind === 'action' ? { ...t, title: t.title.replace(/ \(manual check\)$/, ''), detail: null } : t));
 }
 
-const STATUS = { holds: '成立', refuted: '不成立', insufficient: '证据不足' } as const;
+const STATUS = { holds: 'Holds', refuted: 'Refuted', insufficient: 'Insufficient' } as const;
 
 const PAGE_MARGIN = 50;
 const COLOR = { text: '#1f2328', muted: '#656d76', line: '#d0d7de', high: '#b42318', low: '#1a7f37', medium: '#9a6700' };
@@ -125,8 +125,8 @@ export function visibleFindings(report: VerdictReport, audience: ReportAudience)
 function headline(report: VerdictReport, findings: Finding[], audience: ReportAudience): string {
   if (audience === 'merchant') return report.headline;
   const top = findings.find((f) => f.direction === 'contradicts_claim');
-  if (report.level === 'high') return top?.title ?? '存在明确的反驳证据';
-  if (report.level === 'medium') return top ? `${top.title}，需要进一步核对` : '现有证据无法下结论，需要进一步核对';
+  if (report.level === 'high') return top?.title ?? 'Clear contradicting evidence';
+  if (report.level === 'medium') return top ? `${top.title}; needs further review` : 'Current evidence is inconclusive; needs further review';
   return report.headline;
 }
 
@@ -177,11 +177,11 @@ export async function renderReportPdf(claimId: string, audience: ReportAudience)
     const shot = SHOT_LABEL[e.shotLabel ?? ''] ?? SOURCE_LABEL[e.source];
     if (e.kind === 'video') {
       const frame = firstFrame(e.id);
-      if (frame) images.set(e.id, { sha256: frame.sha256, label: `${e.layer} 层 · 视频首帧` });
+      if (frame) images.set(e.id, { sha256: frame.sha256, label: `Tier ${e.layer} · Video first frame` });
     } else if (e.kind === 'frame') {
-      images.set(e.id, { sha256: e.sha256, label: `${e.layer} 层 · 视频第 ${frameSeconds(e)} 秒` });
+      images.set(e.id, { sha256: e.sha256, label: `Tier ${e.layer} · Video at ${frameSeconds(e)} s` });
     } else {
-      images.set(e.id, { sha256: e.sha256, label: `${e.layer} 层 · ${shot}` });
+      images.set(e.id, { sha256: e.sha256, label: `Tier ${e.layer} · ${shot}` });
     }
   }
   const thumbs = new Map<string, Buffer>();
@@ -212,7 +212,7 @@ function draw(
     size: 'A4',
     margin: PAGE_MARGIN,
     bufferPages: true,
-    info: { Title: `Verdict 核验报告 ${detail.order.orderNo}`, Author: 'Verdict', Subject: `判定 ${verdict.id}` },
+    info: { Title: `Verdict verification report ${detail.order.orderNo}`, Author: 'Verdict', Subject: `Verdict ${verdict.id}` },
   });
   const chunks: Buffer[] = [];
   doc.on('data', (c: Buffer) => chunks.push(c));
@@ -241,62 +241,62 @@ function draw(
   const small = (text: string) => para(text, { size: 8.5, color: COLOR.muted });
 
   // ---------- 标题 ----------
-  doc.fontSize(18).text('核验报告', { features: horizontalFeatures() });
+  doc.fontSize(18).text('Verification report', { features: horizontalFeatures() });
   doc.moveDown(0.3);
   small(
     [
-      `订单 ${detail.order.orderNo}`,
+      `Order ${detail.order.orderNo}`,
       detail.order.items[0]?.title,
       fmtMoney(detail.order.amount, detail.order.currency),
       CLAIM_TYPE_LABEL[detail.claim.type],
-      detail.claim.disputeId ? `PayPal 争议 ${detail.claim.disputeId}` : null,
+      detail.claim.disputeId ? `PayPal dispute ${detail.claim.disputeId}` : null,
     ]
       .filter(Boolean)
       .join(' · '),
   );
-  small(`判定时间 ${fmtTime(verdict.createdAt)} · 判定 ID ${verdict.id} · 规则版本 ${r.rulesVersion}`);
+  small(`Verdict time ${fmtTime(verdict.createdAt)} · Verdict ID ${verdict.id} · Rules version ${r.rulesVersion}`);
   if (audience === 'paypal') {
-    small('本报告由商家使用 Verdict 生成，随争议回应提交。结论由确定性规则根据下列信号计算，最终决定由商家作出。');
+    small('The merchant generated this report with Verdict and submitted it with the dispute response. The conclusion is computed by deterministic rules from the signals below; the final decision is made by the merchant.');
   }
 
   // ---------- 结论 ----------
-  heading('结论');
+  heading('Conclusion');
   const levelColor = r.level === 'high' ? COLOR.high : r.level === 'low' ? COLOR.low : COLOR.medium;
-  para(`${LEVEL_LABEL[r.level]}：${headline(r, findings, audience)}${r.incomplete ? '（核验不完整）' : ''}`, { size: 11.5, color: levelColor });
+  para(`${LEVEL_LABEL[r.level]}: ${headline(r, findings, audience)}${r.incomplete ? ' (Verification incomplete)' : ''}`, { size: 11.5, color: levelColor });
   doc.moveDown(0.3);
   para(
     audience === 'merchant'
-      ? `买家侧风险 R = ${r.score.toFixed(2)}，数据置信度 Q = ${r.dataConfidence.toFixed(2)}，商家侧风险 M = ${r.merchantRisk.toFixed(2)}`
-      : `风险分 R = ${r.score.toFixed(2)}，数据置信度 Q = ${r.dataConfidence.toFixed(2)}`,
+      ? `Buyer risk R = ${r.score.toFixed(2)}, Confidence Q = ${r.dataConfidence.toFixed(2)}, Merchant risk M = ${r.merchantRisk.toFixed(2)}`
+      : `Risk score R = ${r.score.toFixed(2)}, Confidence Q = ${r.dataConfidence.toFixed(2)}`,
   );
   if (audience === 'merchant') {
-    para(`建议动作：${r.primaryAction.label}。${r.primaryAction.reason}`);
-    para(`需要商家决定：${r.decisionNeeded}。`);
+    para(`Recommended action: ${r.primaryAction.label}. ${r.primaryAction.reason}`);
+    para(`Merchant decision needed: ${r.decisionNeeded}.`);
     for (const n of r.notices) para(`· ${n}`);
   }
 
   // ---------- 命题核验 ----------
-  heading('命题核验');
+  heading('Checks');
   for (const p of r.propositions) {
     ensureSpace(30);
-    para(`${p.label}${p.key ? '（关键）' : ''}`);
-    small(`状态：${STATUS[p.status]} · 证据层级：${p.layers.join('、') || '—'}${p.note ? ` · ${p.note}` : ''}`);
+    para(`${p.label}${p.key ? ' (key)' : ''}`);
+    small(`Status: ${STATUS[p.status]} · Evidence tier: ${p.layers.join(', ') || '—'}${p.note ? ` · ${p.note}` : ''}`);
     doc.moveDown(0.2);
   }
 
   // ---------- 发现 ----------
-  heading('发现');
-  if (findings.length === 0) small('没有信号。');
+  heading('Findings');
+  if (findings.length === 0) small('No signals.');
   for (const f of findings) {
     ensureSpace(70);
     para(f.title, { size: 10.5 });
     small(
       [
         ANALYZER_LABEL[f.analyzer].name,
-        `强度${STRENGTH_LABEL[f.strength]}`,
-        `置信度 ${f.confidence.toFixed(2)}`,
-        f.direction === 'contradicts_claim' ? '与索赔矛盾' : f.direction === 'supports_claim' ? '支持索赔' : '中性',
-        f.provider === 'recorded-fixture' ? '录制回放' : f.provider,
+        `Strength: ${STRENGTH_LABEL[f.strength]}`,
+        `Confidence ${f.confidence.toFixed(2)}`,
+        f.direction === 'contradicts_claim' ? 'Contradicts claim' : f.direction === 'supports_claim' ? 'Supports claim' : 'Neutral',
+        f.provider === 'recorded-fixture' ? 'Recorded replay' : f.provider,
       ]
         .filter(Boolean)
         .join(' · '),
@@ -316,42 +316,42 @@ function draw(
       doc.x = PAGE_MARGIN;
       doc.y = top + boxH + 14;
     }
-    if (f.normalExplanations.length) small(`需排除的正常解释：${f.normalExplanations.join('；')}`);
+    if (f.normalExplanations.length) small(`Innocent explanations to rule out: ${f.normalExplanations.join('; ')}`);
     doc.moveDown(0.5);
   }
 
   // ---------- 证据清单 ----------
-  heading('证据清单');
-  if (detail.evidence.length === 0) small('没有证据文件。');
+  heading('Evidence list');
+  if (detail.evidence.length === 0) small('No evidence files.');
   for (const e of detail.evidence) {
     ensureSpace(24);
-    const what = e.kind === 'video' ? '视频 · ' : e.kind === 'frame' ? `视频第 ${frameSeconds(e)} 秒的帧 · ` : '';
-    para(`${what}${e.layer} 层 · ${SOURCE_LABEL[e.source]} · ${SHOT_LABEL[e.shotLabel ?? ''] ?? '未标注'} · ${fmtTime(e.createdAt)}`, { size: 9 });
-    small(`SHA-256 ${e.sha256}${e.challenge ? ` · 挑战码 ${e.challenge.code}` : ''}`);
+    const what = e.kind === 'video' ? 'Video · ' : e.kind === 'frame' ? `Frame at ${frameSeconds(e)} s of video · ` : '';
+    para(`${what}Tier ${e.layer} · ${SOURCE_LABEL[e.source]} · ${SHOT_LABEL[e.shotLabel ?? ''] ?? 'Unlabeled'} · ${fmtTime(e.createdAt)}`, { size: 9 });
+    small(`SHA-256 ${e.sha256}${e.challenge ? ` · Challenge code ${e.challenge.code}` : ''}`);
   }
 
   // ---------- 时间线 ----------
-  heading('时间线');
+  heading('Timeline');
   for (const t of visibleTimeline(detail.timeline, audience)) {
     ensureSpace(16);
     para(`${fmtTime(t.at)}  ${t.title}${t.detail ? ` · ${SHOT_LABEL[t.detail] ?? t.detail}` : ''}`, { size: 9 });
   }
 
   // ---------- 未执行的检查 ----------
-  heading('未执行的检查');
-  if (r.notRun.length === 0) small('适用的分析器全部完成。');
-  for (const n of r.notRun) para(`${ANALYZER_LABEL[n.analyzer].name}（${ANALYZER_LABEL[n.analyzer].what}）：${n.reason}`, { size: 9 });
+  heading('Checks not run');
+  if (r.notRun.length === 0) small('All applicable analyzers completed.');
+  for (const n of r.notRun) para(`${ANALYZER_LABEL[n.analyzer].name} (${ANALYZER_LABEL[n.analyzer].what}): ${n.reason}`, { size: 9 });
 
   if (audience === 'merchant') {
     const action = r.primaryAction;
     if (action.message || action.notes) {
-      heading('草稿');
-      if (action.message) para(`给买家的消息：${action.message.replaceAll(PORTAL_LINK_PLACEHOLDER, '（发送时生成的一次性索赔页链接）')}`);
-      if (action.notes) para(`说明：${action.notes}`);
+      heading('Drafts');
+      if (action.message) para(`Message to buyer: ${action.message.replaceAll(PORTAL_LINK_PLACEHOLDER, '(one-time claim page link generated on send)')}`);
+      if (action.notes) para(`Notes: ${action.notes}`);
     }
-    heading('审计记录');
-    small(`规则版本 ${r.rulesVersion}`);
-    small(`权重配置：${describeConfig(r.config)}`);
+    heading('Audit trail');
+    small(`Rules version ${r.rulesVersion}`);
+    small(`Weight config: ${describeConfig(r.config)}`);
     for (const t of r.ruleTrace) small(`· ${t}`);
   }
 
@@ -364,7 +364,7 @@ function draw(
     doc
       .fontSize(7.5)
       .fillColor(COLOR.muted)
-      .text(`Verdict · 判定 ${verdict.id} · 第 ${i + 1} / ${range.count} 页`, PAGE_MARGIN, doc.page.height - 30, { width, align: 'center', lineBreak: false, features: horizontalFeatures() });
+      .text(`Verdict · Verdict ID ${verdict.id} · Page ${i + 1} of ${range.count}`, PAGE_MARGIN, doc.page.height - 30, { width, align: 'center', lineBreak: false, features: horizontalFeatures() });
     doc.page.margins.bottom = bottom;
   }
 

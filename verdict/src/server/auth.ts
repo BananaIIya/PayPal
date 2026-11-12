@@ -87,10 +87,10 @@ async function burnTime(password: string): Promise<void> {
 }
 
 export function passwordProblem(password: unknown, email?: string): string | null {
-  if (typeof password !== 'string') return '请填写密码';
-  if (password.length < MIN_PASSWORD) return `密码至少 ${MIN_PASSWORD} 位`;
-  if (password.length > MAX_PASSWORD) return `密码不能超过 ${MAX_PASSWORD} 位`;
-  if (email && password.trim().toLowerCase() === email.toLowerCase()) return '密码不能和邮箱一样';
+  if (typeof password !== 'string') return 'Enter a password';
+  if (password.length < MIN_PASSWORD) return `Password must be at least ${MIN_PASSWORD} characters`;
+  if (password.length > MAX_PASSWORD) return `Password cannot exceed ${MAX_PASSWORD} characters`;
+  if (email && password.trim().toLowerCase() === email.toLowerCase()) return 'Password cannot be the same as your email';
   return null;
 }
 
@@ -139,9 +139,9 @@ export function listMembers(merchantId: string): TeamMember[] {
 
 /** 审计记录里显示的确认人。早期版本的动作记的是固定的演示账号。 */
 export function actorLabel(id: string): string {
-  if (id === 'demo-owner') return '店主（登录功能上线前的演示账号）';
+  if (id === 'demo-owner') return 'Owner (demo account from before sign-in existed)';
   const row = userRow(id);
-  return row ? `${row.name}（${ROLE_LABEL[row.role]}）` : id;
+  return row ? `${row.name} (${ROLE_LABEL[row.role]})` : id;
 }
 
 // ---------- 首次设置 ----------
@@ -186,11 +186,11 @@ export async function createFirstOwner(input: {
   email: unknown;
   password: unknown;
 }): Promise<AuthResult<{ user: AuthUser; sessionToken: string }>> {
-  if (!checkSetupToken(input.token)) return fail(403, userCount() > 0 ? '店主账号已经创建过了，请直接登录' : '设置码不对，请使用服务端终端里打印的链接');
+  if (!checkSetupToken(input.token)) return fail(403, userCount() > 0 ? 'The owner account already exists. Sign in instead.' : 'Invalid setup code. Use the link printed in the server terminal.');
   const name = normalizeName(input.name);
-  if (!name) return fail(400, '请填写名字（40 字以内）');
+  if (!name) return fail(400, 'Enter a name (up to 40 characters)');
   const email = normalizeEmail(input.email);
-  if (!email) return fail(400, '邮箱格式不对');
+  if (!email) return fail(400, 'Invalid email format');
   const problem = passwordProblem(input.password, email);
   if (problem) return fail(400, problem);
   const hash = await hashPassword(input.password as string);
@@ -203,7 +203,7 @@ export async function createFirstOwner(input: {
       .run(id, input.merchantId, email, name, hash, nowIso(), nowIso());
     return true;
   });
-  if (!created) return fail(409, '店主账号已经创建过了，请直接登录');
+  if (!created) return fail(409, 'The owner account already exists. Sign in instead.');
   fs.rmSync(setupFile(), { force: true });
   return { ok: true, user: getUser(id)!, sessionToken: createSession(id) };
 }
@@ -216,11 +216,11 @@ export async function login(emailInput: unknown, password: unknown, now = Date.n
   const row = email ? (db().prepare('SELECT * FROM users WHERE email = ?').get(email) as UserRow | undefined) : undefined;
   if (!row || !row.password_hash) {
     await burnTime(pw);
-    return fail(401, '邮箱或密码不对');
+    return fail(401, 'Incorrect email or password');
   }
   if (row.locked_until && new Date(row.locked_until).getTime() > now) {
     const minutes = Math.ceil((new Date(row.locked_until).getTime() - now) / 60_000);
-    return fail(429, `密码错误次数太多，请 ${minutes} 分钟后再试`);
+    return fail(429, `Too many failed attempts. Try again in ${minutes} min.`);
   }
   if (!(await verifyPassword(pw, row.password_hash))) {
     const failed = row.failed_logins + 1;
@@ -229,10 +229,10 @@ export async function login(emailInput: unknown, password: unknown, now = Date.n
     } else {
       db().prepare('UPDATE users SET failed_logins = ? WHERE id = ?').run(failed, row.id);
     }
-    return fail(401, '邮箱或密码不对');
+    return fail(401, 'Incorrect email or password');
   }
   // 停用的账号在密码正确之后才告诉对方，避免拿来探测账号状态。
-  if (row.disabled_at) return fail(403, '这个账号已停用，请联系店主');
+  if (row.disabled_at) return fail(403, 'This account is disabled. Contact the owner.');
   db().prepare('UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = ? WHERE id = ?').run(new Date(now).toISOString(), row.id);
   return { ok: true, user: toUser(row), sessionToken: createSession(row.id, now) };
 }
@@ -314,7 +314,7 @@ export function peekPasswordLink(token: unknown, now = Date.now()): { name: stri
 
 export async function setPasswordWithLink(token: unknown, password: unknown, now = Date.now()): Promise<AuthResult<{ user: AuthUser; sessionToken: string }>> {
   const link = liveLink(token, now);
-  if (!link) return fail(410, '链接已失效或已经用过，请让店主重新生成');
+  if (!link) return fail(410, 'This link has expired or was already used. Ask the owner for a new one.');
   const problem = passwordProblem(password, link.user.email);
   if (problem) return fail(400, problem);
   const hash = await hashPassword(password as string);
@@ -329,17 +329,17 @@ export async function setPasswordWithLink(token: unknown, password: unknown, now
     destroyUserSessions(link.user_id);
     return true;
   });
-  if (!ok) return fail(410, '链接已失效或已经用过，请让店主重新生成');
+  if (!ok) return fail(410, 'This link has expired or was already used. Ask the owner for a new one.');
   return { ok: true, user: toUser(userRow(link.user_id)!), sessionToken: createSession(link.user_id, now) };
 }
 
 export async function changePassword(user: AuthUser, current: unknown, next: unknown, keepToken: string): Promise<AuthResult<object>> {
   const row = userRow(user.id);
-  if (!row?.password_hash) return fail(401, '请重新登录');
-  if (typeof current !== 'string' || !(await verifyPassword(current.slice(0, MAX_PASSWORD), row.password_hash))) return fail(400, '当前密码不对');
+  if (!row?.password_hash) return fail(401, 'Sign in again');
+  if (typeof current !== 'string' || !(await verifyPassword(current.slice(0, MAX_PASSWORD), row.password_hash))) return fail(400, 'Current password is incorrect');
   const problem = passwordProblem(next, row.email);
   if (problem) return fail(400, problem);
-  if (next === current) return fail(400, '新密码不能和当前密码一样');
+  if (next === current) return fail(400, 'New password must differ from the current password');
   db().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(await hashPassword(next as string), user.id);
   destroyUserSessions(user.id, keepToken);
   return { ok: true };
@@ -349,11 +349,11 @@ export async function changePassword(user: AuthUser, current: unknown, next: unk
 
 export function inviteMember(input: { merchantId: string; name: unknown; email: unknown; role: unknown }): AuthResult<{ user: AuthUser; token: string }> {
   const name = normalizeName(input.name);
-  if (!name) return fail(400, '请填写名字（40 字以内）');
+  if (!name) return fail(400, 'Enter a name (up to 40 characters)');
   const email = normalizeEmail(input.email);
-  if (!email) return fail(400, '邮箱格式不对');
-  if (input.role !== 'owner' && input.role !== 'agent') return fail(400, '角色只能是店主或客服');
-  if (db().prepare('SELECT 1 FROM users WHERE email = ?').get(email)) return fail(409, '这个邮箱已经有账号了');
+  if (!email) return fail(400, 'Invalid email format');
+  if (input.role !== 'owner' && input.role !== 'agent') return fail(400, 'Role must be Owner or Agent');
+  if (db().prepare('SELECT 1 FROM users WHERE email = ?').get(email)) return fail(409, 'An account with this email already exists');
   const id = newId();
   db().prepare('INSERT INTO users (id, merchant_id, email, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, input.merchantId, email, name, input.role, nowIso());
   return { ok: true, user: getUser(id)!, token: issuePasswordLink(id, 'invite') };
@@ -369,10 +369,10 @@ function activeOwners(merchantId: string): number {
 
 export function setMemberDisabled(actor: AuthUser, targetId: string, disabled: boolean): AuthResult<{ member: TeamMember }> {
   const target = userRow(targetId);
-  if (!target || target.merchant_id !== actor.merchantId) return fail(404, '成员不存在');
-  if (target.id === actor.id) return fail(400, '不能停用自己的账号');
+  if (!target || target.merchant_id !== actor.merchantId) return fail(404, 'Member not found');
+  if (target.id === actor.id) return fail(400, 'You cannot disable your own account');
   if (disabled && target.role === 'owner' && !target.disabled_at && target.password_hash && activeOwners(actor.merchantId) <= 1) {
-    return fail(400, '至少要保留一个可用的店主账号');
+    return fail(400, 'At least one active owner account is required');
   }
   tx(() => {
     db().prepare('UPDATE users SET disabled_at = ? WHERE id = ?').run(disabled ? nowIso() : null, target.id);
@@ -387,9 +387,9 @@ export function setMemberDisabled(actor: AuthUser, targetId: string, disabled: b
 /** 重新生成设置密码链接：给还没设置密码的成员补发邀请，或给忘记密码的成员重置。 */
 export function reissueLink(actor: AuthUser, targetId: string): AuthResult<{ token: string; purpose: 'invite' | 'reset' }> {
   const target = userRow(targetId);
-  if (!target || target.merchant_id !== actor.merchantId) return fail(404, '成员不存在');
-  if (target.disabled_at) return fail(400, '这个账号已停用，先启用再生成链接');
-  if (target.id === actor.id) return fail(400, '修改自己的密码请用“修改密码”');
+  if (!target || target.merchant_id !== actor.merchantId) return fail(404, 'Member not found');
+  if (target.disabled_at) return fail(400, 'This account is disabled. Enable it before generating a link.');
+  if (target.id === actor.id) return fail(400, 'To change your own password, use "Change password"');
   const purpose = target.password_hash ? 'reset' : 'invite';
   return { ok: true, token: issuePasswordLink(target.id, purpose), purpose };
 }

@@ -12,7 +12,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (auth instanceof NextResponse) return auth;
   const { id } = await params;
   const body = await req.json().catch(() => null);
-  if (!body) return NextResponse.json({ error: '请求体无效' }, { status: 400 });
+  if (!body) return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   const out = await executeAction({
     claimId: id,
     type: body.type,

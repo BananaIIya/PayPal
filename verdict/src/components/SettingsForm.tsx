@@ -18,7 +18,7 @@ const IDLE: SaveState = { busy: false, error: null, done: null, changed: [] };
 
 const STRENGTHS: Strength[] = ['strong', 'moderate', 'weak'];
 const GROUPS = Object.keys(LAYER_WEIGHT_GROUPS) as LayerGroup[];
-const POLICY_FLAG_LABEL = { returnable: '可退货', perishable: '易腐', safetySensitive: '涉及安全', identityRequired: '核对序列号' } as const;
+const POLICY_FLAG_LABEL = { returnable: 'Returnable', perishable: 'Perishable', safetySensitive: 'Safety-sensitive', identityRequired: 'Verify serial number' } as const;
 const EMPTY_ADDRESS: ReturnAddress = { line1: '', line2: '', city: '', state: '', postalCode: '', countryCode: 'US' };
 
 /** 数字输入框里允许暂时是空串或半个小数，提交时由服务端校验。 */
@@ -104,7 +104,7 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
       const res = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setState((s) => ({ ...s, [section]: { ...IDLE, error: body.error ?? '保存失败' } }));
+        setState((s) => ({ ...s, [section]: { ...IDLE, error: body.error ?? 'Save failed' } }));
         return;
       }
       const next = body.view as SettingsView;
@@ -116,30 +116,30 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
       const changed = body.changed as SaveState['changed'];
       const extra =
         recomputed > 0
-          ? `${recomputed} 笔未结案的索赔已重新判定，${changed.length > 0 ? `其中 ${changed.length} 笔判定等级变化：` : '判定等级都没有变化。'}`
+          ? ` Re-evaluated ${recomputed} open claims. ${changed.length > 0 ? `Verdict level changed on ${changed.length}:` : 'No verdict levels changed.'}`
           : '';
       const purged = body.purged as { evidence: number; files: number } | null;
-      const purgedText = purged ? (purged.evidence > 0 ? `已删除 ${purged.evidence} 份到期的证据原件。` : '目前没有到期的证据原件。') : '';
+      const purgedText = purged ? (purged.evidence > 0 ? ` Deleted ${purged.evidence} expired evidence originals.` : ' No evidence originals have expired yet.') : '';
       setState((s) => ({ ...s, [section]: { ...IDLE, done: `${success}${extra}${purgedText}`, changed } }));
       router.refresh();
     } catch {
-      setState((s) => ({ ...s, [section]: { ...IDLE, error: '请求没有发出去，请重试' } }));
+      setState((s) => ({ ...s, [section]: { ...IDLE, error: 'Request failed to send. Try again.' } }));
     }
   }
 
   const scoped = engineFor(view, scope);
   // 类目专用配置的提示值是商家默认（它从商家默认改起），全部类目的提示值是系统默认。
   const base = scope === ALL ? view.defaults : view.engine;
-  const baseLabel = scope === ALL ? '默认' : '商家默认';
+  const baseLabel = scope === ALL ? 'Default' : 'Merchant default';
   const scopeLabel = scope === ALL ? '' : (view.policies.find((p) => p.category === scope)?.label ?? scope);
   const badge =
     scope === ALL
       ? view.customized
-        ? { cls: 'badge-accent', text: '商家自定义' }
-        : { cls: 'badge-sim', text: '默认配置' }
+        ? { cls: 'badge-accent', text: 'Customized' }
+        : { cls: 'badge-sim', text: 'Default' }
       : scoped.own
-        ? { cls: 'badge-accent', text: '类目专用' }
-        : { cls: 'badge-sim', text: '沿用商家默认' };
+        ? { cls: 'badge-accent', text: 'Category-specific' }
+        : { cls: 'badge-sim', text: 'Using merchant default' };
   const changeScope = (next: string) => {
     setScope(next);
     setEngine(toDraft(engineFor(view, next).engine));
@@ -147,13 +147,13 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
   };
   const saveEngine = () =>
     scope === ALL
-      ? save('engine', { engine: fromDraft(engine) }, '已保存。')
-      : save('engine', { categoryEngine: { category: scope, engine: fromDraft(engine) } }, `已保存“${scopeLabel}”的专用配置。`);
+      ? save('engine', { engine: fromDraft(engine) }, 'Saved.')
+      : save('engine', { categoryEngine: { category: scope, engine: fromDraft(engine) } }, `Saved category settings for "${scopeLabel}".`);
   const resetEngine = () => {
     if (scope === ALL) {
-      if (window.confirm('恢复默认权重与阈值？类目专用配置不受影响。未结案的索赔会重新判定。')) void save('engine', { engine: null }, '已恢复默认。');
-    } else if (window.confirm(`删除“${scopeLabel}”的专用配置，改回商家默认？这个类目未结案的索赔会重新判定。`)) {
-      void save('engine', { categoryEngine: { category: scope, engine: null } }, `“${scopeLabel}”已改回商家默认。`);
+      if (window.confirm('Restore default weights and thresholds? Category-specific settings are not affected. Open claims will be re-evaluated.')) void save('engine', { engine: null }, 'Defaults restored.');
+    } else if (window.confirm(`Delete the category settings for "${scopeLabel}" and use the merchant default? Open claims in this category will be re-evaluated.`)) {
+      void save('engine', { categoryEngine: { category: scope, engine: null } }, `"${scopeLabel}" now uses the merchant default.`);
     }
   };
 
@@ -164,26 +164,26 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
 
   return (
     <fieldset className="bare stack" style={{ gap: 14 }} disabled={readOnly}>
-      {readOnly && <p className="notice notice-info">下面的判定设置只有店主可以修改，你可以查看。</p>}
+      {readOnly && <p className="notice notice-info">Only the owner can change these verdict settings. You can view them.</p>}
       <section className="card card-pad">
         <div className="between">
-          <h2>影子模式</h2>
-          <span className={`badge ${view.shadowMode ? 'badge-accent' : 'badge-sim'}`}>{view.shadowMode ? '已开启' : '未开启'}</span>
+          <h2>Shadow mode</h2>
+          <span className={`badge ${view.shadowMode ? 'badge-accent' : 'badge-sim'}`}>{view.shadowMode ? 'On' : 'Off'}</span>
         </div>
         <p className="muted small" style={{ marginBottom: 10 }}>
-          正式启用前先跑一段时间：判定照常计算并存档，但索赔列表、详情和报告里都不显示判定、分数、发现和建议，动作面板只列 PayPal 允许的操作，也不自动附报告和证据。处理人员按自己的判断处理，每个决定都会和当时的判定对照。
+          Run this for a while before going live. Verdicts are still computed and stored, but the claim list, claim details and reports hide verdicts, scores, findings and recommendations. The action panel lists only the actions PayPal allows and does not attach reports or evidence automatically. Agents decide on their own, and each decision is compared with the verdict at that time.
         </p>
         <div className="row">
           <button
             className="btn btn-primary"
             disabled={state.shadow.busy}
-            onClick={() => save('shadow', { shadowMode: !view.shadowMode }, view.shadowMode ? '影子模式已关闭，判定重新显示。' : '影子模式已开启。')}
+            onClick={() => save('shadow', { shadowMode: !view.shadowMode }, view.shadowMode ? 'Shadow mode is off. Verdicts are visible again.' : 'Shadow mode is on.')}
           >
-            {state.shadow.busy ? '保存中…' : view.shadowMode ? '关闭影子模式' : '开启影子模式'}
+            {state.shadow.busy ? 'Saving…' : view.shadowMode ? 'Turn off shadow mode' : 'Turn on shadow mode'}
           </button>
           {!readOnly && (
             <Link className="btn" href="/shadow">
-              查看影子对照
+              View shadow mode results
             </Link>
           )}
         </div>
@@ -191,92 +191,92 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
       </section>
       <section className="card card-pad">
         <div className="between">
-          <h2>判定权重与阈值</h2>
+          <h2>Verdict weights and thresholds</h2>
           <span className={`badge ${badge.cls}`}>{badge.text}</span>
         </div>
         <p className="muted small" style={{ marginBottom: 12 }}>
-          买家侧风险 R = Σ 方向 × 强度权重 × 置信度 × 层级权重。硬规则信号（图片复用、网上更早的相同图片、单据对不上、截图和消息库不符）不受这里影响，出现就判高风险。未核验的来源声明不直接判高风险。买家自己的多份证据互相矛盾只抬到中风险。现场或系统记录里读到的序列号不符，在数据置信度足够时判高风险，但建议仍是先排查错发。可以给某个类目单独配置，比如生鲜的 Q 阈值放低、电子产品的高风险阈值收紧；没有单独配置的类目用商家默认。保存后未结案的索赔会按新配置重新判定；已结案的保留当时的判定。
+          Buyer risk R = Σ direction × strength weight × confidence × tier weight. Hard rule signals (reused image, identical image found earlier online, mismatched documents, screenshot that does not match the message log) are not affected by these settings and always mean High risk. Unverified source claims do not trigger High risk on their own. Contradictions between the buyer's own evidence raise the verdict only to Medium risk. A serial number mismatch read from a live capture or system record means High risk when Confidence Q is sufficient, but the recommendation is still to check for a wrong shipment first. You can configure a category separately, for example a lower Q threshold for fresh food or a stricter High risk threshold for electronics. Categories without their own settings use the merchant default. After you save, open claims are re-evaluated with the new settings. Closed claims keep their original verdict.
         </p>
         <label className="field" style={{ maxWidth: 360 }}>
-          适用范围
+          Applies to
           <select value={scope} onChange={(e) => changeScope(e.target.value)}>
-            <option value={ALL}>所有类目（商家默认）</option>
+            <option value={ALL}>All categories (merchant default)</option>
             {[...new Set([...view.policies.map((p) => p.category), ...view.categoryEngine.map((c) => c.category)])].sort().map((c) => {
               const label = view.policies.find((p) => p.category === c)?.label ?? view.categoryEngine.find((x) => x.category === c)?.label ?? c;
               const own = view.categoryEngine.some((x) => x.category === c);
               return (
                 <option key={c} value={c}>
-                  {label}（{c}）{own ? ' · 专用配置' : ''}
+                  {label} ({c}){own ? ' · Category settings' : ''}
                 </option>
               );
             })}
           </select>
           {scope === ALL && view.categoryEngine.length > 0 && (
             <span className="muted small">
-              {view.categoryEngine.map((c) => c.label).join('、')}有专用配置，改这里不影响它们。
+              {view.categoryEngine.map((c) => c.label).join(', ')} have their own settings. Changes here do not affect them.
             </span>
           )}
-          {scope !== ALL && !scoped.own && <span className="muted small">这个类目现在沿用商家默认。改完保存就成为它的专用配置。</span>}
+          {scope !== ALL && !scoped.own && <span className="muted small">This category uses the merchant default. Saving changes creates category settings for it.</span>}
         </label>
         <div className="settings-grid">
           <fieldset>
-            <legend>信号强度权重</legend>
+            <legend>Signal strength weights</legend>
             {STRENGTHS.map((k) => (
               <NumberField key={k} label={STRENGTH_LABEL[k]} value={engine.strengthWeight[k]} onChange={(v) => setStrength(k, v)} hint={`${baseLabel} ${base.strengthWeight[k]}`} />
             ))}
           </fieldset>
           <fieldset>
-            <legend>证据层级权重（0–1）</legend>
+            <legend>Evidence tier weights (0–1)</legend>
             {GROUPS.map((g) => (
               <NumberField key={g} label={LAYER_WEIGHT_GROUPS[g].label} value={engine.layerWeight[g]} onChange={(v) => setLayer(g, v)} step="0.05" hint={`${baseLabel} ${base.layerWeight[g]}`} />
             ))}
           </fieldset>
           <fieldset>
-            <legend>阈值</legend>
-            <NumberField label="中风险：R ≥" value={engine.riskMedium} onChange={(v) => setEngine((e) => ({ ...e, riskMedium: v }))} hint={`${baseLabel} ${base.riskMedium}`} />
-            <NumberField label="高风险：R ≥" value={engine.riskHigh} onChange={(v) => setEngine((e) => ({ ...e, riskHigh: v }))} hint={`${baseLabel} ${base.riskHigh}`} />
+            <legend>Thresholds</legend>
+            <NumberField label="Medium risk: R ≥" value={engine.riskMedium} onChange={(v) => setEngine((e) => ({ ...e, riskMedium: v }))} hint={`${baseLabel} ${base.riskMedium}`} />
+            <NumberField label="High risk: R ≥" value={engine.riskHigh} onChange={(v) => setEngine((e) => ({ ...e, riskHigh: v }))} hint={`${baseLabel} ${base.riskHigh}`} />
             <NumberField
-              label="数据置信度充足：Q ≥"
+              label="Confidence Q sufficient: Q ≥"
               value={engine.minDataConfidence}
               onChange={(v) => setEngine((e) => ({ ...e, minDataConfidence: v }))}
               step="0.05"
-              hint={`${baseLabel} ${base.minDataConfidence}${scope === ALL ? '（开发文档没有给数值）' : ''}`}
+              hint={`${baseLabel} ${base.minDataConfidence}${scope === ALL ? ' (no value in the spec)' : ''}`}
             />
             <NumberField
-              label="商家侧风险高：M ≥"
+              label="Merchant risk M high: M ≥"
               value={engine.merchantRiskHigh}
               onChange={(v) => setEngine((e) => ({ ...e, merchantRiskHigh: v }))}
               step="0.05"
-              hint={`${baseLabel} ${base.merchantRiskHigh}${scope === ALL ? '（开发文档没有给数值）' : ''}`}
+              hint={`${baseLabel} ${base.merchantRiskHigh}${scope === ALL ? ' (no value in the spec)' : ''}`}
             />
           </fieldset>
         </div>
         <div className="row" style={{ marginTop: 6 }}>
           <button className="btn btn-primary" disabled={state.engine.busy} onClick={saveEngine}>
-            {state.engine.busy ? '保存中…' : scope === ALL ? '保存权重与阈值' : `保存“${scopeLabel}”专用配置`}
+            {state.engine.busy ? 'Saving…' : scope === ALL ? 'Save weights and thresholds' : `Save settings for "${scopeLabel}"`}
           </button>
           <button className="btn" disabled={state.engine.busy || !scoped.own} onClick={resetEngine}>
-            {scope === ALL ? '恢复默认' : '改回商家默认'}
+            {scope === ALL ? 'Restore defaults' : 'Use merchant default'}
           </button>
         </div>
         <Result state={state.engine} />
       </section>
 
       <section className="card card-pad">
-        <h2>类目策略</h2>
+        <h2>Category policies</h2>
         <p className="muted small" style={{ marginBottom: 10 }}>
-          可退货：关掉后不建议退货退款，“商品是否适宜退回”判为不成立。易腐：报告提示重点核对签收到首次反馈的间隔。涉及安全：报告置顶提示先按安全事件处理。核对序列号：必需镜头加上序列号特写，“受损物是否为本订单商品”算关键命题。改动后未结案的索赔会重新判定。
+          Returnable: when off, return and refund is not recommended and "Item is suitable for return" is Refuted. Perishable: the report flags the time from delivery to first contact for review. Safety-sensitive: the report starts with a note to handle it as a safety incident first. Verify serial number: a serial number close-up is added to the required shots, and "Damaged item is this order's item" becomes a key check. Open claims are re-evaluated after changes.
         </p>
         <div className="table-wrap">
           <table className="data">
             <thead>
               <tr>
-                <th>类目</th>
-                <th>订单</th>
-                <th>可退货</th>
-                <th>易腐</th>
-                <th>涉及安全</th>
-                <th>核对序列号</th>
+                <th>Category</th>
+                <th>Orders</th>
+                <th>Returnable</th>
+                <th>Perishable</th>
+                <th>Safety-sensitive</th>
+                <th>Verify serial number</th>
               </tr>
             </thead>
             <tbody>
@@ -290,7 +290,7 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
                     <td key={f}>
                       <input
                         type="checkbox"
-                        aria-label={`${view.policies.find((v) => v.category === p.category)?.label ?? p.category}：${POLICY_FLAG_LABEL[f]}`}
+                        aria-label={`${view.policies.find((v) => v.category === p.category)?.label ?? p.category}: ${POLICY_FLAG_LABEL[f]}`}
                         checked={p[f]}
                         onChange={(e) => setPolicy(p.category, f, e.target.checked)}
                       />
@@ -302,8 +302,8 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
           </table>
         </div>
         <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn btn-primary" disabled={state.policies.busy} onClick={() => save('policies', { policies }, '已保存。')}>
-            {state.policies.busy ? '保存中…' : '保存类目策略'}
+          <button className="btn btn-primary" disabled={state.policies.busy} onClick={() => save('policies', { policies }, 'Saved.')}>
+            {state.policies.busy ? 'Saving…' : 'Save category policies'}
           </button>
         </div>
         <Result state={state.policies} />
@@ -312,36 +312,36 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
       <div className="two-col">
         <section className="card card-pad">
           <div className="between">
-            <h2>退货地址</h2>
-            {!view.returnAddress && <span className="badge badge-warn">正在用演示地址</span>}
+            <h2>Return address</h2>
+            {!view.returnAddress && <span className="badge badge-warn">Using demo address</span>}
           </div>
           <p className="muted small" style={{ marginBottom: 10 }}>
-            提出“退货退款”和解时，PayPal 会把这个地址告诉买家。
-            {!view.returnAddress && `没有填写时用演示地址（${[view.demoReturnAddress.line1, view.demoReturnAddress.city].join(', ')}，虚构）。`}
+            PayPal shares this address with the buyer when you offer a return and refund.
+            {!view.returnAddress && ` If empty, the demo address is used (${[view.demoReturnAddress.line1, view.demoReturnAddress.city].join(', ')}, fictional).`}
           </p>
           <label className="field">
-            街道地址
+            Street address
             <input type="text" value={address.line1} onChange={(e) => setAddress({ ...address, line1: e.target.value })} autoComplete="address-line1" />
           </label>
           <label className="field">
-            地址第二行（可选）
+            Address line 2 (optional)
             <input type="text" value={address.line2 ?? ''} onChange={(e) => setAddress({ ...address, line2: e.target.value })} autoComplete="address-line2" />
           </label>
           <div className="settings-grid">
             <label className="field">
-              城市
+              City
               <input type="text" value={address.city} onChange={(e) => setAddress({ ...address, city: e.target.value })} autoComplete="address-level2" />
             </label>
             <label className="field">
-              州/省
+              State/province
               <input type="text" value={address.state} onChange={(e) => setAddress({ ...address, state: e.target.value })} autoComplete="address-level1" />
             </label>
             <label className="field">
-              邮编
+              Postal code
               <input type="text" value={address.postalCode} onChange={(e) => setAddress({ ...address, postalCode: e.target.value })} autoComplete="postal-code" />
             </label>
             <label className="field">
-              国家代码
+              Country code
               <input
                 type="text"
                 maxLength={2}
@@ -352,12 +352,12 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
             </label>
           </div>
           <div className="row">
-            <button className="btn btn-primary" disabled={state.address.busy} onClick={() => save('address', { returnAddress: address }, '退货地址已保存。')}>
-              {state.address.busy ? '保存中…' : '保存退货地址'}
+            <button className="btn btn-primary" disabled={state.address.busy} onClick={() => save('address', { returnAddress: address }, 'Return address saved.')}>
+              {state.address.busy ? 'Saving…' : 'Save return address'}
             </button>
             {view.returnAddress && (
-              <button className="btn" disabled={state.address.busy} onClick={() => save('address', { returnAddress: null }, '已改回演示地址。')}>
-                改回演示地址
+              <button className="btn" disabled={state.address.busy} onClick={() => save('address', { returnAddress: null }, 'Switched back to the demo address.')}>
+                Use demo address
               </button>
             )}
           </div>
@@ -365,15 +365,15 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
         </section>
 
         <section className="card card-pad">
-          <h2>证据保留期</h2>
+          <h2>Evidence retention</h2>
           <p className="muted small" style={{ marginBottom: 10 }}>
-            开发文档要求原始证据文件按商家设置的保留期到期删除。只删除已结案索赔的买家证据原件；哈希、分析信号和判定保留，图片复用检测仍然有效。商家留底照不受影响。
+            The spec requires original evidence files to be deleted when the merchant's retention period ends. Only the buyer's original evidence files on closed claims are deleted. Hashes, analysis signals and verdicts are kept, so reused-image detection still works. Reference photos are not affected.
           </p>
           <label className="row" style={{ marginBottom: 10 }}>
             <input type="checkbox" checked={retain} onChange={(e) => setRetain(e.target.checked)} />
-            到期自动删除证据原件
+            Delete evidence originals automatically when they expire
           </label>
-          {retain && <NumberField label="证据上传后保留天数" value={days} onChange={setDays} step="1" />}
+          {retain && <NumberField label="Days to keep evidence after upload" value={days} onChange={setDays} step="1" />}
           <div className="row">
             <button
               className="btn btn-primary"
@@ -381,13 +381,13 @@ export function SettingsForm({ initial, readOnly = false }: { initial: SettingsV
               onClick={() => {
                 // NaN 经 JSON 序列化会变成 null，而 null 表示关闭自动删除，所以空值要在这里拦下。
                 if (retain && (days.trim() === '' || !Number.isFinite(Number(days)))) {
-                  setState((s) => ({ ...s, retention: { ...IDLE, error: '请填写保留天数' } }));
+                  setState((s) => ({ ...s, retention: { ...IDLE, error: 'Enter the number of days to keep evidence' } }));
                   return;
                 }
-                void save('retention', { retentionDays: retain ? Number(days) : null }, retain ? '保留期已保存。' : '已关闭自动删除。');
+                void save('retention', { retentionDays: retain ? Number(days) : null }, retain ? 'Retention period saved.' : 'Automatic deletion turned off.');
               }}
             >
-              {state.retention.busy ? '保存中…' : '保存保留期'}
+              {state.retention.busy ? 'Saving…' : 'Save retention period'}
             </button>
           </div>
           <Result state={state.retention} />

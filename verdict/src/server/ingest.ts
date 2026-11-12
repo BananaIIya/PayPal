@@ -50,7 +50,7 @@ export type WebhookOutcome = { status: number; body: Record<string, unknown> };
 
 /** 验签 → 按事件 ID 去重 → 写库 → 拉详情 → 建索赔 → 入队。重放的事件不会重复建索赔。 */
 export async function handleWebhook(rawBody: string, signature: string | null): Promise<WebhookOutcome> {
-  if (!verifySimulatedWebhook(rawBody, signature)) return { status: 401, body: { error: '验签失败' } };
+  if (!verifySimulatedWebhook(rawBody, signature)) return { status: 401, body: { error: 'Signature verification failed' } };
 
   const event = JSON.parse(rawBody) as { id: string; event_type: string; resource: { dispute_id: string } };
   const conn = db();
@@ -61,12 +61,12 @@ export async function handleWebhook(rawBody: string, signature: string | null): 
 
   const disputeId = event.resource.dispute_id;
   const dispute = await getPayPalClient().getDispute(disputeId);
-  if (!dispute) return { status: 404, body: { error: '争议不存在' } };
+  if (!dispute) return { status: 404, body: { error: 'Dispute not found' } };
 
   let claimId: string | undefined;
   if (event.event_type === 'CUSTOMER.DISPUTE.CREATED') {
     const order = dispute.orderId ? getOrder(dispute.orderId) : undefined;
-    if (!order) return { status: 404, body: { error: '找不到对应订单' } };
+    if (!order) return { status: 404, body: { error: 'Matching order not found' } };
     claimId = createClaim({
       merchantId: order.merchant_id,
       orderId: order.id,
@@ -77,7 +77,7 @@ export async function handleWebhook(rawBody: string, signature: string | null): 
       dueAt: dispute.dueAt,
       status: 'analyzing',
     });
-    addTimeline(claimId, 'dispute', 'PayPal 推送争议', `${disputeId}（${dispute.reason}）`);
+    addTimeline(claimId, 'dispute', 'PayPal dispute received', `${disputeId} (${dispute.reason})`);
     startAnalysis(claimId);
   } else if (event.event_type === 'CUSTOMER.DISPUTE.RESOLVED') {
     conn.prepare("UPDATE claims SET status = 'closed' WHERE paypal_dispute_id = ?").run(disputeId);

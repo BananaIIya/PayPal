@@ -12,14 +12,14 @@ import type {
   VerdictReport,
 } from './types';
 
-export const PORTAL_LINK_PLACEHOLDER = '{{索赔页链接}}';
+export const PORTAL_LINK_PLACEHOLDER = '{claim_link}';
 
 const OPERATION: Record<ActionType, (hasDispute: boolean) => string> = {
   refund: () => 'POST /v2/payments/captures/{capture_id}/refund',
   accept_claim: () => 'POST /v1/customer/disputes/{id}/accept-claim',
-  send_message: (d) => (d ? 'POST /v1/customer/disputes/{id}/send-message' : '发送售后消息（不经 PayPal）'),
+  send_message: (d) => (d ? 'POST /v1/customer/disputes/{id}/send-message' : 'Send after-sales message (not via PayPal)'),
   provide_evidence: () => 'POST /v1/customer/disputes/{id}/provide-evidence',
-  make_offer: (d) => (d ? 'POST /v1/customer/disputes/{id}/make-offer' : 'POST /v2/payments/captures/{capture_id}/refund（部分）'),
+  make_offer: (d) => (d ? 'POST /v1/customer/disputes/{id}/make-offer' : 'POST /v2/payments/captures/{capture_id}/refund (partial)'),
   escalate: () => 'POST /v1/customer/disputes/{id}/escalate',
   provide_supporting_info: () => 'POST /v1/customer/disputes/{id}/provide-supporting-info',
   acknowledge_return_item: () => 'POST /v1/customer/disputes/{id}/acknowledge-return-item',
@@ -36,6 +36,8 @@ interface Ctx {
   lowTierShots: string[];
   keyInsufficient: string[];
   incomplete: boolean;
+  /** 序列号不符的证据够硬，可以按错发退款。见 engine.ts 里的条件。 */
+  identityRefund?: boolean;
 }
 
 export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives: SuggestedAction[] } {
@@ -45,18 +47,23 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
   const refund = refundAction(ctx);
   const askLive = askLiveCaptureAction(ctx);
 
-  if (claim.alreadyAgreed) return { primary: { ...refund, reason: '双方已就退款达成一致，不再建议反驳。' }, alternatives: [] };
-
   const hardContradiction = signals.some((s) => HARD_RULE_CODES.has(s.code) && s.direction === 'contradicts_claim');
+  // 商家答应过退款时不再反驳。但证据命中硬规则（比如文件声明由 AI 从零生成）时，不按已同意处理。
+  if (claim.alreadyAgreed && !hardContradiction) {
+    return { primary: { ...refund, reason: 'Both parties agreed on a refund; contesting is no longer recommended.' }, alternatives: [] };
+  }
   if (has('IDENTITY_MISMATCH') && !hardContradiction) {
-    const alternatives = [askLive, refund];
+    // 只有序列号来自现场拍摄或系统记录、核验完整时，才把退款列为错发的处理方式。
+    const alternatives = ctx.identityRefund ? [askLive, refund] : [askLive];
     if (has('PROVENANCE_CLAIM_UNVERIFIED')) alternatives.push(askOriginal(ctx));
     if (claim.hasDispute) alternatives.push(evidenceAction(ctx));
     return {
       primary: {
         type: 'none',
-        label: '先排查是否错发',
-        reason: '序列号与发货留底不一致。仓库错发会呈现同样的现象。在排除商家履约错误之前，不要把这当成买家欺诈，也不要提交反驳。',
+        label: 'Check for a wrong shipment first',
+        reason: ctx.identityRefund
+          ? 'The serial number does not match the shipment reference. A warehouse shipping error looks the same. Until a merchant fulfillment error is ruled out, do not treat this as buyer fraud and do not contest.'
+          : 'The serial number does not match the shipment reference, which may be a warehouse shipping error. But this serial number comes from a gallery upload or verification is incomplete, so it cannot justify a refund. Check the shipping records first and ask the buyer for a live photo of the serial number.',
         paypalOperation: null,
       },
       alternatives,
@@ -70,13 +77,13 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
         return {
           primary: {
             ...refund,
-            reason: '物流签收邮编和订单收货地址不一致，这份单号不能证明送到了买家，不建议提交给 PayPal。',
+            reason: 'The delivery postal code does not match the order shipping address. This tracking number does not prove delivery to the buyer; do not submit it to PayPal.',
           },
           alternatives: [
             askMessage(
               ctx,
-              '核对收货情况',
-              '您好，物流信息显示的签收地址与订单地址不一致，请问您是否更改过收货地址或委托他人代收？我们会据此继续处理。',
+              'Confirm delivery details',
+              'Hello, the tracking shows a delivery address that differs from the order address. Did you change the shipping address or ask someone else to receive it? We will continue based on your answer.',
             ),
           ],
         };
@@ -85,10 +92,10 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
         return {
           primary: {
             type: 'none',
-            label: '人工复核',
+            label: 'Manual review',
             reason: has('SHIPPED_BEFORE_ORDER')
-              ? '物流轨迹早于这笔订单的下单时间，这份单号不能证明是本次发货。先不要退款，也不要提交给 PayPal。'
-              : '物流还没有可核对的签收记录，不能据此退款。',
+              ? 'The tracking history predates this order, so this tracking number does not prove this shipment. Do not refund or submit it to PayPal yet.'
+              : 'There is no verifiable delivery record yet, so this cannot justify a refund.',
             paypalOperation: null,
           },
           alternatives: [askLive],
@@ -103,10 +110,10 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
       return {
         primary: {
           type: 'none',
-          label: '人工复核',
+          label: 'Manual review',
           reason: ctx.incomplete
-            ? `部分分析器未执行，无法确认：${ctx.keyInsufficient.join('；')}。配置检测服务后可重新分析。`
-            : `缺少可靠证据：${ctx.keyInsufficient.join('；')}。请先补全发货留底或物流信息。`,
+            ? `Some analyzers did not run, so these cannot be confirmed: ${ctx.keyInsufficient.join('; ')}. Re-run analysis after configuring detection services.`
+            : `Missing reliable evidence: ${ctx.keyInsufficient.join('; ')}. Add shipment reference photos or tracking details first.`,
           paypalOperation: null,
         },
         alternatives: [askLive],
@@ -129,8 +136,8 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
         return {
           primary: askMessage(
             ctx,
-            '请买家澄清',
-            `您好，我们正在处理您的售后申请。您提供的文字说明和照片在部分细节上需要再确认一下，请您再描述一下收到商品时的情况，并通过此链接补充现场照片：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
+            'Ask buyer to clarify',
+            `Hello, we are processing your request. Some details in your description and photos need confirming. Please describe the item's condition when you received it, and add live photos using this link: ${PORTAL_LINK_PLACEHOLDER}. Thank you.`,
           ),
           alternatives: [askLive],
         };
@@ -139,8 +146,8 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
         return {
           primary: askMessage(
             ctx,
-            '请买家说明',
-            `您好，您提交的照片之间有对不上的地方。请说明哪一份是这次收到的商品，并通过此链接补充现场照片：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
+            'Ask buyer to explain',
+            `Hello, some of the photos you submitted do not match each other. Please tell us which one shows the item you received, and add live photos using this link: ${PORTAL_LINK_PLACEHOLDER}. Thank you.`,
           ),
           alternatives: [askLive],
         };
@@ -159,7 +166,7 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
       return {
         primary: {
           ...askLive,
-          reason: '这是买家绕开 PayPal 提出的请求，没有争议可以提交反驳证据；建议暂不退款，先请买家现场补证。',
+          reason: 'The buyer made this request outside PayPal, so there is no dispute to submit evidence to. Hold the refund and ask the buyer for live evidence first.',
         },
         alternatives: [],
       };
@@ -169,24 +176,24 @@ export function buildActions(ctx: Ctx): { primary: SuggestedAction; alternatives
 
 function refundAction(ctx: Ctx): SuggestedAction {
   const { claim, policy } = ctx;
-  const noReturn = policy.returnable ? '' : '该类商品不要求退货。';
+  const noReturn = policy.returnable ? '' : ' Returns not required for this category.';
   if (claim.hasDispute) {
     return {
       type: 'accept_claim',
-      label: '接受索赔并退款',
-      reason: `未发现与索赔矛盾的证据，可按商家政策退款。${noReturn}`,
+      label: 'Accept claim and refund',
+      reason: `No evidence contradicts the claim; refund per merchant policy.${noReturn}`,
       paypalOperation: OPERATION.accept_claim(true),
       refundAmount: claim.amount,
-      notes: '经核验未发现与索赔矛盾的证据，接受买家索赔。',
+      notes: 'Verification found no evidence contradicting the claim. Accepting the buyer claim.',
     };
   }
   return {
     type: 'refund',
-    label: '按政策全额退款',
-    reason: `未发现与索赔矛盾的证据，可按商家政策退款。${noReturn}`,
+    label: 'Full refund per policy',
+    reason: `No evidence contradicts the claim; refund per merchant policy.${noReturn}`,
     paypalOperation: OPERATION.refund(false),
     refundAmount: claim.amount,
-    message: `您好，您的售后申请已处理，货款 ${claim.currency} ${claim.amount.toFixed(2)} 已退回原支付账户。给您带来不便，非常抱歉。`,
+    message: `Hello, your request has been processed. ${claim.currency} ${claim.amount.toFixed(2)} has been refunded to your original payment method. We are sorry for the inconvenience.`,
   };
 }
 
@@ -194,24 +201,24 @@ function askOriginal(ctx: Ctx): SuggestedAction {
   return {
     ...askMessage(
       ctx,
-      '请买家提供原图',
-      `您好，为了核实问题，请提供未经任何工具编辑的原始照片，或通过此链接现场拍摄：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
+      'Ask buyer for original photo',
+      `Hello, to verify the issue, please send the original photo without any edits, or take live photos using this link: ${PORTAL_LINK_PLACEHOLDER}. Thank you.`,
     ),
-    reason: '文件里的来源声明还没有核验签名，不能据此否定索赔。请买家提供未经编辑的原图，或补充独立证据。',
+    reason: 'The provenance claim in the file has no verified signature, so it cannot refute the claim. Ask the buyer for the unedited original photo or other independent evidence.',
   };
 }
 
 function askLiveCaptureAction(ctx: Ctx): SuggestedAction {
   const items = [...ctx.missingShots, ...ctx.lowTierShots];
-  const list = items.length ? `需要补充：${items.join('、')}。` : '需要再补充几张现场照片。';
+  const list = items.length ? `we need: ${items.join(', ')}.` : 'we need a few more live photos.';
   return {
     type: 'send_message',
-    label: '请买家现场补拍',
+    label: 'Ask buyer for live photos',
     reason: items.length
-      ? `一次性列出缺失镜头，请买家通过索赔页现场拍摄（${items.length} 项）。`
-      : '现场拍摄并带挑战码的证据可信度更高，可以帮助确认事实。',
+      ? `Lists all missing shots at once for the buyer to capture live on the claim page (${items.length} items).`
+      : 'Live photos with a challenge code are more reliable and help confirm the facts.',
     paypalOperation: OPERATION.send_message(ctx.claim.hasDispute),
-    message: `您好，为了尽快处理您的售后申请，${list}请通过此链接拍摄，全程约两分钟：${PORTAL_LINK_PLACEHOLDER}。如果无法现场拍摄，页面也支持从相册上传。谢谢配合。`,
+    message: `Hello, to process your request quickly, ${list} Please take them using this link; it takes about two minutes: ${PORTAL_LINK_PLACEHOLDER}. If you cannot take photos now, the page also accepts gallery uploads. Thank you.`,
   };
 }
 
@@ -219,7 +226,7 @@ function askMessage(ctx: Ctx, label: string, message: string): SuggestedAction {
   return {
     type: 'send_message',
     label,
-    reason: '需要买家补充信息后再判断。',
+    reason: 'Need more information from the buyer before deciding.',
     paypalOperation: OPERATION.send_message(ctx.claim.hasDispute),
     message,
   };
@@ -229,11 +236,11 @@ function proofOfFulfillmentAction(ctx: Ctx): SuggestedAction {
   const { claim } = ctx;
   return {
     type: 'provide_evidence',
-    label: '提交物流证据',
-    reason: '物流显示已签收到订单收货地址，建议以 PROOF_OF_FULFILLMENT 提交，而不是要求买家补拍。签收不等于本人取得，请结合买家消息判断。',
+    label: 'Submit fulfillment evidence',
+    reason: "Tracking shows delivery to the order shipping address. Submit it as PROOF_OF_FULFILLMENT instead of asking the buyer for more photos. Delivery does not mean the buyer personally received it; check the buyer's messages.",
     paypalOperation: OPERATION.provide_evidence(true),
     evidenceType: 'PROOF_OF_FULFILLMENT',
-    notes: `物流记录显示包裹已签收到订单收货地址。承运商：${claim.carrier ?? '未知'}，单号：${claim.trackingNumber ?? '未知'}。`,
+    notes: `Tracking records show the package was delivered to the order shipping address. Carrier: ${claim.carrier ?? 'unknown'}, tracking number: ${claim.trackingNumber ?? 'unknown'}.`,
     trackingNumber: claim.trackingNumber ?? undefined,
     carrier: claim.carrier ?? undefined,
     attachEvidence: true,
@@ -253,11 +260,11 @@ function evidenceAction(ctx: Ctx): SuggestedAction {
   const facts = factList(ctx.findings);
   return {
     type: 'provide_evidence',
-    label: '提交反驳证据',
-    reason: '存在强反驳信号。提交前请先核对下方“需排除的正常解释”。',
+    label: 'Submit evidence to contest',
+    reason: 'Strong contradicting signals found. Before submitting, review "Innocent explanations to rule out" below.',
     paypalOperation: OPERATION.provide_evidence(true),
     evidenceType: 'OTHER',
-    notes: `商家经核验发现以下事实：\n${facts}`,
+    notes: `The merchant's verification found the following facts:\n${facts}`,
     attachEvidence: true,
     attachReport: true,
   };
@@ -271,12 +278,12 @@ function evidenceAction(ctx: Ctx): SuggestedAction {
 export function returnOfferDraft(claim: { amount: number; currency: string }): SuggestedAction {
   return {
     type: 'make_offer',
-    label: '提出退货退款',
-    reason: '买家先把商品寄回，商家验货后再退款。适合商品可以退回、需要先看到实物的情况。金额可修改。',
+    label: 'Offer refund with return',
+    reason: 'The buyer ships the item back first, and the merchant refunds after inspecting it. Use when the item can be returned and you need to see it first. Amount is editable.',
     paypalOperation: OPERATION.make_offer(true),
     offerAmount: claim.amount,
     withReturn: true,
-    notes: `您好，很抱歉商品没有达到您的预期。请按 PayPal 提供的退货地址寄回商品，我们收到并验货后会退还 ${claim.currency} ${claim.amount.toFixed(2)}。`,
+    notes: `Hello, we are sorry the item did not meet your expectations. Please ship it back to the return address provided by PayPal. Once we receive and inspect it, we will refund ${claim.currency} ${claim.amount.toFixed(2)}.`,
   };
 }
 
@@ -293,10 +300,10 @@ export function followUpDraft(type: FollowUpType, report: VerdictReport, claim: 
     case 'provide_supporting_info':
       return {
         type,
-        label: '向 PayPal 补充说明',
-        reason: 'PayPal 正在审理这笔争议，可以追加说明和关键证据。只补充新的事实，不要重复已提交的内容。',
+        label: 'Send more info to PayPal',
+        reason: 'PayPal is reviewing this dispute. You can add notes and key evidence. Add only new facts; do not repeat what was already submitted.',
         paypalOperation: OPERATION.provide_supporting_info(true),
-        notes: facts ? `补充说明：商家核验后确认以下事实：\n${facts}` : '补充说明：',
+        notes: facts ? `Additional information: the merchant's verification confirmed the following facts:\n${facts}` : 'Additional information:',
         attachEvidence: true,
       };
     case 'acknowledge_return_item': {
@@ -305,25 +312,24 @@ export function followUpDraft(type: FollowUpType, report: VerdictReport, claim: 
         .map((f) => f.title);
       return {
         type,
-        label: '确认退货收货情况',
+        label: 'Confirm return receipt',
         reason: `${
           related.length
-            ? `请按实际验收结果选择。核验中有与退回物相关的发现（${related.join('、')}），但系统无法代替开箱验收。`
-            : '请按实际验收结果选择。系统无法代替开箱验收，默认选项只是“已收到”。'
-        }选“已收到，状态正常”后 PayPal 会直接退款结案。`,
+            ? `Choose based on your actual inspection. Verification has findings related to the returned item (${related.join(', ')}), but the system cannot replace inspecting the package.`
+            : 'Choose based on your actual inspection. The system cannot replace inspecting the package, so there is no default option.'
+        } Choosing "Return received in normal condition" makes PayPal refund and close the case immediately.`,
         paypalOperation: OPERATION.acknowledge_return_item(true),
-        acknowledgementType: 'ITEM_RECEIVED',
-        notes: '商家已收到买家退回的包裹。',
+        notes: 'The merchant has received the package returned by the buyer.',
       };
     }
     case 'appeal':
       return {
         type,
-        label: '申诉',
-        reason: 'PayPal 已判买家胜诉。只有掌握新的、可验证的证据时申诉才有意义，提交前请核对“需排除的正常解释”。',
+        label: 'Appeal',
+        reason: 'PayPal ruled in favor of the buyer. An appeal only makes sense with new, verifiable evidence. Before submitting, review "Innocent explanations to rule out".',
         paypalOperation: OPERATION.appeal(true),
         evidenceType: claim.trackingNumber && report.findings.some((f) => f.code === 'DELIVERED_CONFIRMED') ? 'PROOF_OF_FULFILLMENT' : 'OTHER',
-        notes: facts ? `商家申诉，依据以下核验事实：\n${facts}` : '商家申诉，依据如下：',
+        notes: facts ? `Merchant appeal, based on the following verified facts:\n${facts}` : 'Merchant appeal, based on the following:',
         trackingNumber: claim.trackingNumber ?? undefined,
         carrier: claim.carrier ?? undefined,
         attachEvidence: true,
@@ -337,11 +343,11 @@ function offerAction(ctx: Ctx): SuggestedAction {
   const amount = Math.round(claim.amount * 50) / 100;
   return {
     type: 'make_offer',
-    label: '提出部分退款和解',
-    reason: '称重记录与买家所述不完全一致，但少件无法完全排除，部分退款是成本较低的解决方式。金额可修改。',
+    label: 'Offer partial refund',
+    reason: "The weight record does not fully match the buyer's account, but missing items cannot be fully ruled out. A partial refund is a lower-cost resolution. Amount is editable.",
     paypalOperation: OPERATION.make_offer(claim.hasDispute),
     offerAmount: amount,
-    notes: `您好，我们核对了发货记录。为尽快解决此事，我们愿意退还 ${claim.currency} ${amount.toFixed(2)} 作为和解，您看是否可以接受？`,
+    notes: `Hello, we have checked our shipping records. To resolve this quickly, we can offer a refund of ${claim.currency} ${amount.toFixed(2)}. Would that work for you?`,
   };
 }
 
@@ -365,68 +371,67 @@ export function neutralActions(ctx: {
   const { allowed, hasDispute, amount, currency } = ctx;
   const can = (t: ActionType) => allowed.includes(t);
   const out: SuggestedAction[] = [];
-  const reason = '影子模式：判定不显示，请根据证据和订单信息自行决定。';
+  const reason = 'Shadow mode: the verdict is hidden. Decide based on the evidence and order details.';
   if (!ctx.closed) {
     if (can('send_message')) {
       out.push({
         type: 'send_message',
-        label: '发消息给买家',
+        label: 'Message buyer',
         reason,
         paypalOperation: op('send_message', hasDispute),
-        message: `您好，我们正在处理您的售后申请。如需补充照片，请通过此链接拍摄或上传：${PORTAL_LINK_PLACEHOLDER}。谢谢配合。`,
+        message: `Hello, we are processing your request. If you need to add photos, you can take or upload them using this link: ${PORTAL_LINK_PLACEHOLDER}. Thank you.`,
       });
     }
     if (can('provide_evidence')) {
-      out.push({ type: 'provide_evidence', label: '提交证据', reason, paypalOperation: op('provide_evidence', true), evidenceType: 'OTHER', notes: '' });
+      out.push({ type: 'provide_evidence', label: 'Submit evidence', reason, paypalOperation: op('provide_evidence', true), evidenceType: 'OTHER', notes: '' });
       if (ctx.trackingNumber) {
         out.push({
           type: 'provide_evidence',
-          label: '提交物流证据',
+          label: 'Submit fulfillment evidence',
           reason,
           paypalOperation: op('provide_evidence', true),
           evidenceType: 'PROOF_OF_FULFILLMENT',
-          notes: `承运商：${ctx.carrier ?? '未知'}，单号：${ctx.trackingNumber}。`,
+          notes: `Carrier: ${ctx.carrier ?? 'unknown'}, tracking number: ${ctx.trackingNumber}.`,
           trackingNumber: ctx.trackingNumber,
           carrier: ctx.carrier ?? undefined,
         });
       }
     }
     if (can('make_offer')) {
-      out.push({ type: 'make_offer', label: '提出部分退款', reason: `${reason}金额自己填写。`, paypalOperation: op('make_offer', hasDispute), notes: '' });
+      out.push({ type: 'make_offer', label: 'Offer partial refund', reason: `${reason} Enter the amount yourself.`, paypalOperation: op('make_offer', hasDispute), notes: '' });
       if (ctx.canOfferReturn) {
-        out.push({ ...returnOfferDraft({ amount, currency }), reason: `${reason}买家先寄回，验货后再退款。` });
+        out.push({ ...returnOfferDraft({ amount, currency }), reason: `${reason} The buyer ships it back first; refund after inspection.` });
       }
     }
     if (can('accept_claim')) {
-      out.push({ type: 'accept_claim', label: '接受索赔并退款', reason, paypalOperation: op('accept_claim', true), refundAmount: amount, notes: '接受买家索赔。' });
+      out.push({ type: 'accept_claim', label: 'Accept claim and refund', reason, paypalOperation: op('accept_claim', true), refundAmount: amount, notes: 'Accepting the buyer claim.' });
     }
     if (can('refund')) {
       out.push({
         type: 'refund',
-        label: '全额退款',
+        label: 'Full refund',
         reason,
         paypalOperation: op('refund', false),
         refundAmount: amount,
-        message: `您好，您的售后申请已处理，货款 ${currency} ${amount.toFixed(2)} 已退回原支付账户。`,
+        message: `Hello, your request has been processed. ${currency} ${amount.toFixed(2)} has been refunded to your original payment method.`,
       });
     }
-    if (can('escalate')) out.push({ type: 'escalate', label: '升级到 PayPal 审理', reason, paypalOperation: op('escalate', true), notes: '' });
+    if (can('escalate')) out.push({ type: 'escalate', label: 'Escalate to PayPal', reason, paypalOperation: op('escalate', true), notes: '' });
   }
   if (can('provide_supporting_info')) {
-    out.push({ type: 'provide_supporting_info', label: '向 PayPal 补充说明', reason, paypalOperation: op('provide_supporting_info', true), notes: '补充说明：' });
+    out.push({ type: 'provide_supporting_info', label: 'Send more info to PayPal', reason, paypalOperation: op('provide_supporting_info', true), notes: 'Additional information:' });
   }
   if (can('acknowledge_return_item')) {
     out.push({
       type: 'acknowledge_return_item',
-      label: '确认退货收货情况',
-      reason: `${reason}请按实际验收结果选择，选“已收到，状态正常”后 PayPal 会直接退款结案。`,
+      label: 'Confirm return receipt',
+      reason: `${reason} Choose based on your actual inspection. Choosing "Return received in normal condition" makes PayPal refund and close the case immediately.`,
       paypalOperation: op('acknowledge_return_item', true),
-      acknowledgementType: 'ITEM_RECEIVED',
-      notes: '商家已收到买家退回的包裹。',
+      notes: 'The merchant has received the package returned by the buyer.',
     });
   }
   if (can('appeal')) {
-    out.push({ type: 'appeal', label: '申诉', reason, paypalOperation: op('appeal', true), evidenceType: 'OTHER', notes: '商家申诉，依据如下：' });
+    out.push({ type: 'appeal', label: 'Appeal', reason, paypalOperation: op('appeal', true), evidenceType: 'OTHER', notes: 'Merchant appeal, based on the following:' });
   }
   return out;
 }

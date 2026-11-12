@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "verdict", "run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "verdict-demo",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["DEMO_PORT=3100", "npm", "--prefix", "verdict", "run", "demo"],
+      "port": 3100
     }
   ]
 }

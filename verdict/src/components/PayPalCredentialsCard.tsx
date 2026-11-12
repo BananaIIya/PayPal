@@ -6,9 +6,9 @@ import type { PayPalCredentialView } from '@/server/paypal-credentials';
 import { fmtDateTime } from './format';
 
 const SOURCE_TEXT: Record<PayPalCredentialView['source'], string> = {
-  database: '正在使用：设置页保存的凭证（加密存储）',
-  env: '正在使用：环境变量里的凭证',
-  none: '还没有配置，PayPal 走模拟器',
+  database: 'In use: credentials saved in Settings (encrypted)',
+  env: 'In use: credentials from environment variables',
+  none: 'Not configured. PayPal uses the simulator.',
 };
 
 /** 店主保存 PayPal 沙箱凭证。Secret 只进不出：保存后页面上只显示 Client ID 尾号。 */
@@ -33,16 +33,16 @@ export function PayPalCredentialsCard({ initial }: { initial: PayPalCredentialVi
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMessage({ ok: false, text: data.error ?? '保存失败' });
+        setMessage({ ok: false, text: data.error ?? 'Save failed' });
         return;
       }
       setView(data as PayPalCredentialView);
       setClientId('');
       setSecret('');
-      setMessage({ ok: true, text: method === 'PUT' ? 'PayPal 接受了这组凭证，已加密保存。' : '已删除设置页保存的凭证。' });
+      setMessage({ ok: true, text: method === 'PUT' ? 'PayPal accepted these credentials. Saved encrypted.' : 'Deleted the credentials saved in Settings.' });
       router.refresh();
     } catch {
-      setMessage({ ok: false, text: '请求没有发出去，请重试' });
+      setMessage({ ok: false, text: 'Request failed to send. Try again.' });
     } finally {
       setBusy(false);
     }
@@ -50,26 +50,26 @@ export function PayPalCredentialsCard({ initial }: { initial: PayPalCredentialVi
 
   return (
     <section className="card card-pad">
-      <h2>PayPal 凭证</h2>
+      <h2>PayPal credentials</h2>
       <p className="small" style={{ marginBottom: 6 }}>
         {SOURCE_TEXT[view.source]}
       </p>
       {view.stored && (
         <p className="muted small" style={{ marginBottom: 6 }}>
-          已保存：Client ID 尾号 <span className="mono">{view.stored.clientIdTail}</span>
-          {view.stored.webhookId ? ' · 已填 Webhook ID' : ''} · {view.stored.updatedBy} 于 {fmtDateTime(view.stored.updatedAt)} 保存
+          Saved: Client ID ending <span className="mono">{view.stored.clientIdTail}</span>
+          {view.stored.webhookId ? ' · Webhook ID set' : ''} · Saved by {view.stored.updatedBy} on {fmtDateTime(view.stored.updatedAt)}
         </p>
       )}
       {view.error && <p className="notice notice-danger" style={{ marginBottom: 10 }}>{view.error}</p>}
       {!canSave ? (
         <p className="notice" style={{ marginBottom: 10 }}>
-          {view.encryption.error ?? '服务端没有配置 APP_ENCRYPTION_KEY，所以不能在这里保存凭证。'}
-          在 .env.local 里加上 APP_ENCRYPTION_KEY（用 openssl rand -hex 32 生成）并重启服务后就可以保存。
-          {view.source === 'env' ? '现在用的是环境变量里的凭证，不受影响。' : ''}
+          {view.encryption.error ?? 'APP_ENCRYPTION_KEY is not set on the server, so credentials cannot be saved here.'}{' '}
+          Add APP_ENCRYPTION_KEY to .env.local (generate it with openssl rand -hex 32) and restart the server to save.
+          {view.source === 'env' ? ' The credentials from environment variables in use now are not affected.' : ''}
         </p>
       ) : (
         <p className="muted small" style={{ marginBottom: 10 }}>
-          只支持沙箱应用的凭证。Secret 用 AES-256-GCM 加密后存库，密钥来自 APP_ENCRYPTION_KEY，保存后任何页面都不会再显示。保存前会先向 PayPal 验证。设置页保存的凭证优先于环境变量。换成另一个沙箱账户后，之前的沙箱订单和争议就不能再操作了。
+          Sandbox app credentials only. The secret is encrypted with AES-256-GCM using APP_ENCRYPTION_KEY before it is stored, and is never shown on any page after saving. Credentials are verified with PayPal before saving. Credentials saved in Settings take precedence over environment variables. After switching to another sandbox account, earlier sandbox orders and disputes can no longer be acted on.
         </p>
       )}
       <form
@@ -88,10 +88,10 @@ export function PayPalCredentialsCard({ initial }: { initial: PayPalCredentialVi
             <input type="password" autoComplete="new-password" required value={secret} onChange={(e) => setSecret(e.target.value)} />
           </label>
           <label className="field">
-            Webhook ID（可选）
+            Webhook ID (optional)
             <input type="text" autoComplete="off" spellCheck={false} value={webhookId} onChange={(e) => setWebhookId(e.target.value)} />
           </label>
-          <button className="btn btn-primary">{busy ? '验证中…' : '验证并保存'}</button>
+          <button className="btn btn-primary">{busy ? 'Verifying…' : 'Verify and save'}</button>
         </fieldset>
       </form>
       {/* 放在表单外：密钥丢失、凭证解密不了的时候也要能删掉。 */}
@@ -102,10 +102,10 @@ export function PayPalCredentialsCard({ initial }: { initial: PayPalCredentialVi
           style={{ marginTop: 8 }}
           disabled={busy}
           onClick={() => {
-            if (window.confirm(`删除设置页保存的凭证？${view.envConfigured ? '之后会改用环境变量里的凭证。' : '之后 PayPal 会回到模拟器。'}`)) void send('DELETE');
+            if (window.confirm(`Delete the credentials saved in Settings? ${view.envConfigured ? 'The credentials from environment variables will be used instead.' : 'PayPal will go back to the simulator.'}`)) void send('DELETE');
           }}
         >
-          删除保存的凭证
+          Delete saved credentials
         </button>
       )}
       {message && (

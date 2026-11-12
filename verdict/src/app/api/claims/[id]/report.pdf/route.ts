@@ -14,12 +14,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const claim = getClaim(id);
   if (claim && shadowModeOn(claim.merchant_id)) {
-    return NextResponse.json({ error: '现在是影子模式，判定不给处理人员看，所以不出报告' }, { status: 403 });
+    return NextResponse.json({ error: 'Shadow mode is on. Verdicts are hidden from agents, so no report is available.' }, { status: 403 });
   }
   const audience: ReportAudience = req.nextUrl.searchParams.get('audience') === 'paypal' ? 'paypal' : 'merchant';
   try {
     const report = await renderReportPdf(id, audience);
-    if (!report) return NextResponse.json({ error: '索赔不存在或还没有判定' }, { status: 404 });
+    if (!report) return NextResponse.json({ error: 'Claim not found or has no verdict yet' }, { status: 404 });
     const name = audience === 'paypal' ? 'verdict-report-paypal.pdf' : report.fileName;
     return new NextResponse(new Uint8Array(report.data), {
       headers: {

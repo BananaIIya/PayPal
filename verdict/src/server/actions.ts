@@ -9,6 +9,7 @@
 //
 // PayPal 的争议接口不支持 PayPal-Request-Id，幂等键只在本地生效。
 // 所以超时、断连、5xx 记为 unknown（结果不明），在商家对账之前这笔索赔不能再执行任何动作。
+import { RULES_VERSION } from '@/core/catalog';
 import { FUND_ACTIONS, RETURN_ACK_TYPES, type ActionType, type ReturnAckType, type Role } from '@/core/types';
 import { PORTAL_LINK_PLACEHOLDER } from '@/core/recommend';
 import { clientForEnv, requireSandbox } from '@/paypal';
@@ -52,33 +53,50 @@ export interface Actor {
 
 export type ActionOutcome = { status: number; body: Record<string, unknown> };
 
-const FUND_DENIED = '退款、接受索赔、和解和确认收到退货会动用资金，只有店主可以确认';
+const FUND_DENIED = 'Refunds, accepting claims, offers and confirming returns move money. Only the owner can confirm them.';
 
 /** 这些动作会把钱退给买家。只有判定建议本身就是这一项时才能执行。 */
 const BUYER_PAYOUT: ReadonlySet<ActionType> = new Set<ActionType>(['refund', 'accept_claim', 'make_offer']);
 
-export function identityRefundAllowed(findings: { code: string; direction: string; hardRule?: boolean }[]): boolean {
-  const identity = findings.some((f) => f.code === 'IDENTITY_MISMATCH' && f.direction === 'contradicts_claim');
-  const hard = findings.some((f) => f.hardRule);
-  return identity && !hard;
+/** 引擎判断序列号不符可能是错发、而且证据够硬时才写 identityRefund。旧报告没有这个字段，按不放行处理。 */
+export function identityRefundAllowed(report: { identityRefund?: boolean }): boolean {
+  return report.identityRefund === true;
+}
+
+/** 判定是按旧版规则算的。缺少版本号的旧报告也算。没传这个字段（undefined）时不检查。 */
+export function verdictRulesOutdated(rulesVersion: string | null | undefined): boolean {
+  return rulesVersion !== undefined && rulesVersion !== RULES_VERSION;
 }
 
 export function payoutBlockedByVerdict(
-  verdict: { level: string; suggestedAction: string; identityRefund?: boolean; alreadyAgreed?: boolean },
+  verdict: {
+    level: string;
+    suggestedAction: string;
+    identityRefund?: boolean;
+    alreadyAgreed?: boolean;
+    /** 判定命中了硬规则。这时商家答应过退款也不再豁免。 */
+    hardRule?: boolean;
+    rulesVersion?: string | null;
+  },
   action: { type: string; withReturn?: boolean },
 ): string | null {
   if (!BUYER_PAYOUT.has(action.type as ActionType)) return null;
+  // 规则更新后，旧判定里的“低风险，建议退款”可能已经不成立。先重新分析再动钱。
+  if (verdictRulesOutdated(verdict.rulesVersion)) {
+    return 'This verdict was computed with old rules, and the rules have since changed. Re-analyze first, then decide whether to refund, accept the claim or make an offer.';
+  }
   const fullPayout = action.type === 'refund' || action.type === 'accept_claim';
+  const agreed = !!verdict.alreadyAgreed && !verdict.hardRule;
   // 全额退款只在低风险、双方已同意，或序列号不符需要排查错发时放行。中风险的和解不受这一条限制。
-  if (fullPayout && (verdict.level === 'medium' || verdict.level === 'high') && !verdict.identityRefund && !verdict.alreadyAgreed) {
-    return '这次判定是中风险或高风险，不能全额退款或接受索赔。';
+  if (fullPayout && (verdict.level === 'medium' || verdict.level === 'high') && !verdict.identityRefund && !agreed) {
+    return 'This verdict is Medium or High risk. A full refund or accepting the claim is not allowed.';
   }
   if (verdict.suggestedAction === action.type) return null;
   if (verdict.identityRefund && (action.type === 'refund' || action.type === 'accept_claim')) return null;
   if (verdict.level === 'insufficient') {
-    return '判定仍是证据不足，不能退款、接受索赔或提出和解。请先补证，重新分析后再决定。';
+    return 'The verdict is still Insufficient evidence, so you cannot refund, accept the claim or make an offer. Collect more evidence and re-analyze before deciding.';
   }
-  return '这次判定没有建议退款。退款、接受索赔和和解都不会执行。';
+  return 'This verdict does not recommend a refund. Refunds, accepting the claim and offers will not run.';
 }
 
 const VALID_TYPES: ActionType[] = [
@@ -100,10 +118,10 @@ const MAX_TEXT = 2000;
 const STUCK_PENDING_MS = 2 * 60 * 1000;
 
 const DEFAULT_NOTE: Partial<Record<ActionType, string>> = {
-  make_offer: '商家提出退款以解决这笔争议。',
-  accept_claim: '商家接受买家的索赔。',
-  escalate: '商家不同意买家的说法，请求 PayPal 介入。',
-  acknowledge_return_item: '商家已处理买家退回的包裹。',
+  make_offer: 'The merchant offers a refund to resolve this dispute.',
+  accept_claim: 'The merchant accepts the buyer\'s claim.',
+  escalate: 'The merchant disagrees with the buyer and asks PayPal to step in.',
+  acknowledge_return_item: 'The merchant has processed the package the buyer returned.',
 };
 
 export interface PayPalState {
@@ -129,7 +147,7 @@ export async function paypalState(claim: ClaimRow, order: OrderRow, opts: { fres
       env,
       allowed: onClosed(dispute?.allowedActions ?? []),
       dispute,
-      error: dispute ? null : 'PayPal 找不到这笔争议',
+      error: dispute ? null : 'PayPal cannot find this dispute',
     };
   } catch (e) {
     return { env, allowed: [], dispute: null, error: e instanceof Error ? e.message : String(e) };
@@ -149,21 +167,21 @@ function withPortalLink(text: string, claim: ClaimRow, origin: string): string {
 function validate(req: ActionRequest, order: OrderRow, claim: ClaimRow): string | null {
   const { type, payload } = req;
   const amount = payload.amount;
-  if (type === 'send_message' && !payload.message?.trim()) return '消息内容不能为空';
-  if ((payload.message?.length ?? 0) > MAX_TEXT) return `消息不能超过 ${MAX_TEXT} 字`;
-  if ((payload.notes?.length ?? 0) > MAX_TEXT) return `说明不能超过 ${MAX_TEXT} 字`;
+  if (type === 'send_message' && !payload.message?.trim()) return 'Message cannot be empty';
+  if ((payload.message?.length ?? 0) > MAX_TEXT) return `Message cannot exceed ${MAX_TEXT} characters`;
+  if ((payload.notes?.length ?? 0) > MAX_TEXT) return `Notes cannot exceed ${MAX_TEXT} characters`;
   if (EVIDENCE_TYPES.has(type)) {
-    if (!payload.notes?.trim()) return '提交说明不能为空';
-    if (payload.evidenceType !== 'OTHER' && payload.evidenceType !== 'PROOF_OF_FULFILLMENT') return '证据类型无效';
-    if (payload.evidenceType === 'PROOF_OF_FULFILLMENT' && !payload.trackingNumber) return '物流证据需要物流单号';
+    if (!payload.notes?.trim()) return 'Submission notes cannot be empty';
+    if (payload.evidenceType !== 'OTHER' && payload.evidenceType !== 'PROOF_OF_FULFILLMENT') return 'Invalid evidence type';
+    if (payload.evidenceType === 'PROOF_OF_FULFILLMENT' && !payload.trackingNumber) return 'Fulfillment evidence needs a tracking number';
   }
-  if (type === 'provide_supporting_info' && !payload.notes?.trim()) return '补充说明不能为空';
-  if (type === 'acknowledge_return_item' && !RETURN_ACK_TYPES.includes(payload.acknowledgementType as ReturnAckType)) return '请选择退货验收结果';
+  if (type === 'provide_supporting_info' && !payload.notes?.trim()) return 'Supporting info cannot be empty';
+  if (type === 'acknowledge_return_item' && !RETURN_ACK_TYPES.includes(payload.acknowledgementType as ReturnAckType)) return 'Select the return inspection result';
   if (type === 'make_offer' || type === 'refund') {
-    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return '金额必须大于 0';
-    if (amount > order.amount) return `金额不能超过订单金额 ${order.amount}`;
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return 'Amount must be greater than 0';
+    if (amount > order.amount) return `Amount cannot exceed the order amount ${order.amount}`;
   }
-  if (payload.withReturn && (type !== 'make_offer' || !claim.paypal_dispute_id)) return '只有 PayPal 争议里的和解提议可以要求退货';
+  if (payload.withReturn && (type !== 'make_offer' || !claim.paypal_dispute_id)) return 'Only an offer in a PayPal dispute can require a return';
   return null;
 }
 
@@ -185,7 +203,7 @@ async function callPayPal(req: ActionRequest, claim: ClaimRow, order: OrderRow, 
     case 'send_message': {
       const res: PayPalWriteResult = disputeId
         ? await pp.sendMessage(disputeId, message, key)
-        : { simulated: true, environment: order.paypal_env, operation: '售后消息（不经 PayPal，MVP 不实际发送）', message };
+        : { simulated: true, environment: order.paypal_env, operation: 'After-sales message (not via PayPal; the MVP does not actually send it)', message };
       db()
         .prepare("INSERT INTO messages (id, order_id, sender, text, created_at) VALUES (?, ?, 'merchant', ?, ?)")
         .run(newId(), order.id, message, nowIso());
@@ -215,16 +233,16 @@ async function callPayPal(req: ActionRequest, claim: ClaimRow, order: OrderRow, 
 }
 
 const AFTER_ACTION: Record<ActionType, { status: 'closed' | 'action_sent'; title: string }> = {
-  refund: { status: 'closed', title: '商家确认退款' },
-  accept_claim: { status: 'closed', title: '商家接受索赔' },
-  send_message: { status: 'action_sent', title: '商家发送消息' },
-  provide_evidence: { status: 'action_sent', title: '商家提交证据' },
-  make_offer: { status: 'action_sent', title: '商家提出和解' },
-  escalate: { status: 'action_sent', title: '商家升级争议' },
-  provide_supporting_info: { status: 'action_sent', title: '商家补充说明' },
-  acknowledge_return_item: { status: 'action_sent', title: '商家确认退货验收结果' },
+  refund: { status: 'closed', title: 'Merchant confirmed refund' },
+  accept_claim: { status: 'closed', title: 'Merchant accepted claim' },
+  send_message: { status: 'action_sent', title: 'Merchant sent message' },
+  provide_evidence: { status: 'action_sent', title: 'Merchant submitted evidence' },
+  make_offer: { status: 'action_sent', title: 'Merchant made an offer' },
+  escalate: { status: 'action_sent', title: 'Merchant escalated dispute' },
+  provide_supporting_info: { status: 'action_sent', title: 'Merchant provided supporting info' },
+  acknowledge_return_item: { status: 'action_sent', title: 'Merchant confirmed return inspection result' },
   // 申诉让已结案的索赔重新进入处理中，PayPal 再次结案时同步会把它关掉。
-  appeal: { status: 'action_sent', title: '商家提出申诉' },
+  appeal: { status: 'action_sent', title: 'Merchant filed appeal' },
 };
 
 interface PreviousAction {
@@ -241,24 +259,24 @@ function replay(previous: PreviousAction): ActionOutcome {
   const response = previous.paypal_response ? (JSON.parse(previous.paypal_response) as Record<string, unknown>) : null;
   const body = { actionId: previous.id, status: previous.status, response, replay: true };
   if (previous.status === 'succeeded') return { status: 200, body };
-  if (previous.status === 'pending') return { status: 409, body: { ...body, error: '这个动作正在执行，请稍候' } };
+  if (previous.status === 'pending') return { status: 409, body: { ...body, error: 'This action is running. Please wait.' } };
   if (previous.status === 'processing') {
-    return { status: 409, body: { ...body, error: '退款已提交，PayPal 仍在处理，完成前不能再次退款' } };
+    return { status: 409, body: { ...body, error: 'Refund submitted and PayPal is still processing it. You cannot refund again until it completes.' } };
   }
-  return { status: 502, body: { ...body, error: (response?.error as string | undefined) ?? '这个动作上次没有成功' } };
+  return { status: 502, body: { ...body, error: (response?.error as string | undefined) ?? 'This action did not succeed last time' } };
 }
 
 function inFlightMessage(status: string): string {
-  if (status === 'pending') return '这笔索赔有一个动作正在执行，请稍候';
-  if (status === 'processing') return '退款已提交，PayPal 仍在处理，完成前不能再次退款';
-  return '这笔索赔有一个结果不明的动作，请先核对 PayPal 后台并标记结果';
+  if (status === 'pending') return 'An action on this claim is running. Please wait.';
+  if (status === 'processing') return 'Refund submitted and PayPal is still processing it. You cannot refund again until it completes.';
+  return 'This claim has an action with an unknown result. Check the PayPal dashboard and mark the result first.';
 }
 
 export async function executeAction(req: ActionRequest): Promise<ActionOutcome> {
-  if (req.confirm !== true) return { status: 400, body: { error: '动作需要商家确认' } };
-  if (!req.idempotencyKey) return { status: 400, body: { error: '缺少 Idempotency-Key' } };
-  if (!req.actor?.id) return { status: 401, body: { error: '缺少确认人' } };
-  if (!VALID_TYPES.includes(req.type)) return { status: 400, body: { error: '未知的动作类型' } };
+  if (req.confirm !== true) return { status: 400, body: { error: 'Action requires merchant confirmation' } };
+  if (!req.idempotencyKey) return { status: 400, body: { error: 'Missing Idempotency-Key' } };
+  if (!req.actor?.id) return { status: 401, body: { error: 'Missing confirming user' } };
+  if (!VALID_TYPES.includes(req.type)) return { status: 400, body: { error: 'Unknown action type' } };
   if (FUND_ACTIONS.has(req.type) && req.actor.role !== 'owner') return { status: 403, body: { error: FUND_DENIED } };
 
   const conn = db();
@@ -266,22 +284,28 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
   if (previous) return replay(previous);
 
   const claim = getClaim(req.claimId);
-  if (!claim) return { status: 404, body: { error: '索赔不存在' } };
+  if (!claim) return { status: 404, body: { error: 'Claim not found' } };
   const order = getOrder(claim.order_id)!;
 
   const verdict = latestVerdict(claim.id);
   if (!verdict || verdict.id !== req.verdictId) {
-    return { status: 409, body: { error: '判定已更新，请查看最新结果后再确认', latestVerdictId: verdict?.id ?? null } };
+    return { status: 409, body: { error: 'The verdict has been updated. Review the latest result before confirming.', latestVerdictId: verdict?.id ?? null } };
   }
   // 页面和直接打这个接口走同一条限制。影子模式不展示判定，但也不能借此把钱退出去。
   const shadow = shadowModeOn(claim.merchant_id);
-  const report = JSON.parse(verdict.report) as { findings?: { code: string; direction: string; hardRule?: boolean }[] };
+  const report = JSON.parse(verdict.report) as {
+    findings?: { code: string; direction: string; hardRule?: boolean }[];
+    identityRefund?: boolean;
+    rulesVersion?: string;
+  };
   const blocked = payoutBlockedByVerdict(
     {
       level: verdict.level,
       suggestedAction: verdict.suggested_action,
-      identityRefund: identityRefundAllowed(report.findings ?? []),
+      identityRefund: identityRefundAllowed(report),
       alreadyAgreed: merchantAgreedRefund(order.id),
+      hardRule: (report.findings ?? []).some((f) => f.hardRule),
+      rulesVersion: report.rulesVersion ?? null,
     },
     { type: req.type, withReturn: req.payload.withReturn },
   );
@@ -289,9 +313,9 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
 
   // 动作前绕过缓存：商家看到的状态可能已经过期，这里以 PayPal 此刻的状态为准。
   const state = await paypalState(claim, order, { fresh: true });
-  if (state.error) return { status: 502, body: { error: `无法确认 PayPal 当前状态，动作没有执行：${state.error}` } };
+  if (state.error) return { status: 502, body: { error: `Could not confirm the current PayPal state, so the action did not run: ${state.error}` } };
   if (!state.allowed.includes(req.type)) {
-    return { status: 409, body: { error: `当前状态不允许这个动作（允许：${state.allowed.join('、') || '无'}）` } };
+    return { status: 409, body: { error: `The current state does not allow this action (allowed: ${state.allowed.join(', ') || 'none'})` } };
   }
 
   const invalid = validate(req, order, claim);
@@ -311,7 +335,7 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
   const raced = findByKey(req.idempotencyKey);
   if (raced) return replay(raced);
   if (latestVerdict(claim.id)?.id !== verdict.id) {
-    return { status: 409, body: { error: '判定已更新，请查看最新结果后再确认', latestVerdictId: latestVerdict(claim.id)?.id ?? null } };
+    return { status: 409, body: { error: 'The verdict has been updated. Review the latest result before confirming.', latestVerdictId: latestVerdict(claim.id)?.id ?? null } };
   }
   const inFlight = conn.prepare("SELECT id, status FROM actions WHERE claim_id = ? AND status IN ('pending', 'unknown', 'processing') LIMIT 1").get(claim.id) as
     | { id: string; status: string }
@@ -328,7 +352,7 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
 
   // 替换链接后消息会变长（token 约 300 字），要按最终长度校验。放在 INSERT 前，超长时什么都不会发出。
   const message = req.payload.message ? withPortalLink(req.payload.message, claim, req.origin) : '';
-  if (message.length > MAX_TEXT) return { status: 400, body: { error: `加上索赔链接后消息超过 ${MAX_TEXT} 字，请缩短` } };
+  if (message.length > MAX_TEXT) return { status: 400, body: { error: `With the claim link added, the message exceeds ${MAX_TEXT} characters. Shorten it.` } };
 
   const actionId = newId();
   const confirmedAt = nowIso();
@@ -346,38 +370,38 @@ export async function executeAction(req: ActionRequest): Promise<ActionOutcome> 
     if (bundle.reportSkipped) response.reportSkipped = bundle.reportSkipped;
     if (result.status === 'PENDING') {
       conn.prepare("UPDATE actions SET status = 'processing', paypal_response = ? WHERE id = ?").run(JSON.stringify(response), actionId);
-      addTimeline(claim.id, 'action', '退款处理中', `确认人：${actorLabel(req.actor.id)}；${response.operation}`);
+      addTimeline(claim.id, 'action', 'Refund processing', `Confirmed by: ${actorLabel(req.actor.id)}; ${response.operation}`);
       return { status: 202, body: { actionId, status: 'processing', response } };
     }
     conn.prepare("UPDATE actions SET status = 'succeeded', paypal_response = ? WHERE id = ?").run(JSON.stringify(response), actionId);
     const after = AFTER_ACTION[req.type];
     conn.prepare('UPDATE claims SET status = ? WHERE id = ?').run(after.status, claim.id);
-    const title = req.type === 'make_offer' && req.payload.withReturn ? '商家提出退货退款' : after.title;
-    addTimeline(claim.id, 'action', title, `确认人：${actorLabel(req.actor.id)}；${response.operation}`);
+    const title = req.type === 'make_offer' && req.payload.withReturn ? 'Merchant offered refund with return' : after.title;
+    addTimeline(claim.id, 'action', title, `Confirmed by: ${actorLabel(req.actor.id)}; ${response.operation}`);
     return { status: 200, body: { actionId, status: 'succeeded', response } };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     const unknown = e instanceof PayPalApiError && e.indeterminate;
     const status = unknown ? 'unknown' : 'failed';
     conn.prepare('UPDATE actions SET status = ?, paypal_response = ? WHERE id = ?').run(status, JSON.stringify({ error }), actionId);
-    addTimeline(claim.id, 'action', unknown ? '动作结果不明' : '动作执行失败', error);
+    addTimeline(claim.id, 'action', unknown ? 'Action result unknown' : 'Action failed', error);
     return { status: 502, body: { actionId, status, error } };
   }
 }
 
 /** 结果不明的动作由人对照 PayPal 后台来定。系统不自动重试，避免重复退款。 */
 export function resolveAction(input: { claimId: string; actionId: string; outcome: 'succeeded' | 'failed'; confirm: boolean; actor: Actor }): ActionOutcome {
-  if (input.confirm !== true) return { status: 400, body: { error: '需要商家确认' } };
-  if (input.outcome !== 'succeeded' && input.outcome !== 'failed') return { status: 400, body: { error: '结果无效' } };
+  if (input.confirm !== true) return { status: 400, body: { error: 'Merchant confirmation required' } };
+  if (input.outcome !== 'succeeded' && input.outcome !== 'failed') return { status: 400, body: { error: 'Invalid result' } };
   const conn = db();
   const action = conn.prepare('SELECT * FROM actions WHERE id = ? AND claim_id = ?').get(input.actionId, input.claimId) as
     | { id: string; type: ActionType; status: string; confirmed_at: string; paypal_response: string | null }
     | undefined;
-  if (!action) return { status: 404, body: { error: '动作不存在' } };
+  if (!action) return { status: 404, body: { error: 'Action not found' } };
   // 标记资金动作“已生效/没生效”会决定要不要重新退款，和确认资金动作同样要店主来做。
-  if (FUND_ACTIONS.has(action.type) && input.actor.role !== 'owner') return { status: 403, body: { error: '这是资金动作，只有店主可以核对结果' } };
+  if (FUND_ACTIONS.has(action.type) && input.actor.role !== 'owner') return { status: 403, body: { error: 'This action moves money. Only the owner can reconcile its result.' } };
   const stuck = action.status === 'pending' && Date.now() - new Date(action.confirmed_at).getTime() > STUCK_PENDING_MS;
-  if (action.status !== 'unknown' && action.status !== 'processing' && !stuck) return { status: 409, body: { error: '这个动作不需要对账' } };
+  if (action.status !== 'unknown' && action.status !== 'processing' && !stuck) return { status: 409, body: { error: 'This action does not need reconciliation' } };
 
   const response = {
     ...(action.paypal_response ? (JSON.parse(action.paypal_response) as Record<string, unknown>) : {}),
@@ -387,9 +411,9 @@ export function resolveAction(input: { claimId: string; actionId: string; outcom
   if (input.outcome === 'succeeded') {
     const after = AFTER_ACTION[action.type];
     conn.prepare('UPDATE claims SET status = ? WHERE id = ?').run(after.status, input.claimId);
-    addTimeline(input.claimId, 'action', `${after.title}（人工核对）`, `核对人：${actorLabel(input.actor.id)}`);
+    addTimeline(input.claimId, 'action', `${after.title} (manual check)`, `Checked by: ${actorLabel(input.actor.id)}`);
   } else {
-    addTimeline(input.claimId, 'action', '动作未生效（人工核对）', `核对人：${actorLabel(input.actor.id)}`);
+    addTimeline(input.claimId, 'action', 'Action did not take effect (manual check)', `Checked by: ${actorLabel(input.actor.id)}`);
   }
   return { status: 200, body: { actionId: action.id, status: input.outcome } };
 }
@@ -400,28 +424,28 @@ export type SandboxTool =
 
 /** 沙箱专用接口，用来把争议推进到需要的状态。只对沙箱订单开放，而且 PayPal 要给了链接。 */
 export async function runSandboxTool(input: { claimId: string; confirm: boolean } & SandboxTool): Promise<ActionOutcome> {
-  if (input.confirm !== true) return { status: 400, body: { error: '需要商家确认' } };
+  if (input.confirm !== true) return { status: 400, body: { error: 'Merchant confirmation required' } };
   const claim = getClaim(input.claimId);
-  if (!claim) return { status: 404, body: { error: '索赔不存在' } };
+  if (!claim) return { status: 404, body: { error: 'Claim not found' } };
   const order = getOrder(claim.order_id)!;
-  if (order.paypal_env !== 'sandbox' || !claim.paypal_dispute_id) return { status: 409, body: { error: '只有沙箱争议才能使用测试工具' } };
+  if (order.paypal_env !== 'sandbox' || !claim.paypal_dispute_id) return { status: 409, body: { error: 'Test tools are only available for sandbox disputes' } };
   const validValue =
     (input.tool === 'require_evidence' && (input.value === 'SELLER_EVIDENCE' || input.value === 'BUYER_EVIDENCE')) ||
     (input.tool === 'adjudicate' && (input.value === 'BUYER_FAVOR' || input.value === 'SELLER_FAVOR'));
-  if (!validValue) return { status: 400, body: { error: '测试工具参数无效' } };
+  if (!validValue) return { status: 400, body: { error: 'Invalid test tool parameter' } };
 
   try {
     const client = requireSandbox();
     const dispute = await client.getDispute(claim.paypal_dispute_id, { fresh: true });
-    if (!dispute) return { status: 404, body: { error: 'PayPal 找不到这笔争议' } };
+    if (!dispute) return { status: 404, body: { error: 'PayPal cannot find this dispute' } };
     if (input.tool === 'require_evidence') {
-      if (!dispute.sandboxTools.requireEvidence) return { status: 409, body: { error: 'PayPal 当前没有提供这个测试接口' } };
+      if (!dispute.sandboxTools.requireEvidence) return { status: 409, body: { error: 'PayPal does not currently offer this test endpoint' } };
       await client.requireEvidence(claim.paypal_dispute_id, input.value);
     } else {
-      if (!dispute.sandboxTools.adjudicate) return { status: 409, body: { error: 'PayPal 当前没有提供这个测试接口' } };
+      if (!dispute.sandboxTools.adjudicate) return { status: 409, body: { error: 'PayPal does not currently offer this test endpoint' } };
       await client.adjudicate(claim.paypal_dispute_id, input.value);
     }
-    addTimeline(claim.id, 'dispute', '沙箱测试工具', `${input.tool}：${input.value}`);
+    addTimeline(claim.id, 'dispute', 'Sandbox test tool', `${input.tool}: ${input.value}`);
     const fresh = await client.getDispute(claim.paypal_dispute_id, { fresh: true });
     if (fresh) upsertClaimFromDispute(fresh);
     return { status: 200, body: { ok: true } };

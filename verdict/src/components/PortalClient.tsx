@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Brand } from './Brand';
 
 interface Shot {
   id: string;
@@ -16,6 +17,7 @@ interface PortalData {
 }
 type Step = 'order' | 'type' | 'capture' | 'describe' | 'done';
 const STEP_ORDER: Step[] = ['order', 'type', 'capture', 'describe', 'done'];
+const STEP_NAME = ['Order', 'Problem', 'Photos', 'Details'];
 
 export function PortalClient({ token }: { token: string }) {
   const [data, setData] = useState<PortalData | null>(null);
@@ -32,7 +34,7 @@ export function PortalClient({ token }: { token: string }) {
     const res = await fetch(`/api/portal/${encodeURIComponent(token)}`, { cache: 'no-store' });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setFatal(body.error ?? '链接无效');
+      setFatal(body.error ?? 'Invalid link');
       return null;
     }
     setData(body as PortalData);
@@ -70,7 +72,7 @@ export function PortalClient({ token }: { token: string }) {
     return (
       <div className="portal">
         <div className="portal-inner">
-          <h1>无法打开这个链接</h1>
+          <h1>Can't open this link</h1>
           <p className="muted">{fatal}</p>
         </div>
       </div>
@@ -79,7 +81,7 @@ export function PortalClient({ token }: { token: string }) {
   if (!data) {
     return (
       <div className="portal">
-        <div className="portal-inner muted">加载中…</div>
+        <div className="portal-inner muted">Loading…</div>
       </div>
     );
   }
@@ -89,38 +91,49 @@ export function PortalClient({ token }: { token: string }) {
   async function submit() {
     setBusy(true);
     setError(null);
-    const res = await fetch(`/api/portal/${encodeURIComponent(token)}/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ claimType, narrative }),
-    });
-    const body = await res.json().catch(() => ({}));
-    setBusy(false);
-    if (!res.ok) {
-      setError(body.error ?? '提交失败，请重试');
-      return;
+    try {
+      const res = await fetch(`/api/portal/${encodeURIComponent(token)}/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claimType, narrative }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(body.error ?? 'Submission failed. Try again.');
+        return;
+      }
+      setStep('done');
+    } catch {
+      setError('The request did not go through. Check your connection and try again.');
+    } finally {
+      setBusy(false);
     }
-    setStep('done');
   }
 
   return (
     <div className="portal">
-      <div className="portal-inner">
-        <div className="portal-top">
-          <strong>售后证据提交</strong>
-          <span className="muted small">订单 {data.order.orderNo}</span>
+      <header className="portal-bar">
+        <div>
+          <span className="brand">
+            <Brand />
+          </span>
+          <span className="order-no">Claim evidence · Order {data.order.orderNo}</span>
         </div>
+      </header>
+      <div className="portal-inner">
         <div className="steps" aria-hidden="true">
           {STEP_ORDER.slice(0, 4).map((s, i) => (
-            <span key={s} className={STEP_ORDER.indexOf(step) >= i ? 'on' : ''} />
+            <span key={s} className={STEP_ORDER.indexOf(step) >= i ? 'on' : ''}>
+              {STEP_NAME[i]}
+            </span>
           ))}
         </div>
 
         {step === 'order' && (
           <>
-            <h1>确认订单</h1>
+            <h1>Confirm your order</h1>
             <p className="muted" style={{ marginBottom: 14 }}>
-              请确认这是你要售后的订单。
+              Confirm this is the order you need help with.
             </p>
             <div className="order-box">
               <strong>
@@ -128,19 +141,19 @@ export function PortalClient({ token }: { token: string }) {
                 {data.order.quantity > 1 ? ` ×${data.order.quantity}` : ''}
               </strong>
               <div className="muted">
-                订单号 {data.order.orderNo} · {data.order.currency} {data.order.amount.toFixed(2)}
+                Order {data.order.orderNo} · {data.order.currency} {data.order.amount.toFixed(2)}
               </div>
-              <div className="muted">收货邮编后四位：{data.order.addressTail}</div>
+              <div className="muted">Last 4 of shipping ZIP: {data.order.addressTail}</div>
             </div>
             <button className="btn btn-primary btn-lg" onClick={() => setStep(data.claim.lockedType ? 'capture' : 'type')}>
-              是这笔订单，继续
+              Yes, this is my order
             </button>
           </>
         )}
 
         {step === 'type' && (
           <>
-            <h1>遇到了什么问题？</h1>
+            <h1>What's the problem?</h1>
             <div style={{ marginTop: 14 }}>
               {data.claimTypes.map((t) => (
                 <button
@@ -161,41 +174,43 @@ export function PortalClient({ token }: { token: string }) {
 
         {step === 'capture' && (
           <>
-            <h1>拍摄照片</h1>
+            <h1>Take photos</h1>
             <p className="muted" style={{ marginBottom: 10 }}>
-              请用手机现场拍摄。每个镜头都有一个随机码，把它写在纸上放进画面，这样可以更快确认情况。也可以录一段 15 秒以内的短视频。
+              Take the photos live with your phone. Each shot has a challenge code: write it on paper and keep it in the frame so we can confirm things faster. You can also record a short video of up to 15 seconds.
             </p>
+            <div className="shot-list">
             {shots.map((s) => (
               <div className="shot-row" key={s.id}>
                 <span className={`shot-state ${done[s.id] ? 'done' : ''}`}>{done[s.id] ? '✓' : ''}</span>
                 <div style={{ flex: 1 }}>
                   <strong>{s.label}</strong>
                   <div className="muted small">
-                    {done[s.id] === 'album' ? '已从相册上传' : done[s.id] === 'live' ? '挑战码已核对' : done[s.id] === 'pending' ? '已拍摄，待核验' : s.hint}
+                    {done[s.id] === 'album' ? 'Uploaded from gallery' : done[s.id] === 'live' ? 'Challenge code verified' : done[s.id] === 'pending' ? 'Captured, pending verification' : s.hint}
                   </div>
                 </div>
                 <button className="btn" onClick={() => setActiveShot(s)}>
-                  {done[s.id] ? '重拍' : '开始'}
+                  {done[s.id] ? 'Retake' : 'Start'}
                 </button>
               </div>
             ))}
-            {shots.length === 0 && <p className="muted">这个问题类型不需要拍照。</p>}
+            </div>
+            {shots.length === 0 && <p className="muted">No photos needed for this problem type.</p>}
             <button
               className="btn btn-primary btn-lg"
               style={{ marginTop: 16 }}
               disabled={shots.some((s) => !done[s.id])}
               onClick={() => setStep('describe')}
             >
-              下一步
+              Next
             </button>
             {shots.some((s) => !done[s.id]) && (
               <p className="muted small" style={{ marginTop: 8, textAlign: 'center' }}>
-                还差 {shots.filter((s) => !done[s.id]).length} 个镜头
+                {shots.filter((s) => !done[s.id]).length} {shots.filter((s) => !done[s.id]).length === 1 ? 'shot' : 'shots'} left
               </p>
             )}
             <div style={{ textAlign: 'center', marginTop: 10 }}>
               <button className="btn-link small" onClick={() => setStep('describe')}>
-                暂时拍不了，先提交已有内容
+                Can't take photos now? Submit what you have
               </button>
             </div>
           </>
@@ -203,39 +218,42 @@ export function PortalClient({ token }: { token: string }) {
 
         {step === 'describe' && (
           <>
-            <h1>补充说明</h1>
+            <h1>Details</h1>
             <label className="field" style={{ marginTop: 12 }}>
-              描述一下情况（可选）
-              <textarea rows={5} value={narrative} onChange={(e) => setNarrative(e.target.value)} placeholder="例如：收到时外箱一角压坏，杯身有裂纹。" />
+              Describe what happened (optional)
+              <textarea rows={5} value={narrative} onChange={(e) => setNarrative(e.target.value)} placeholder="For example: one corner of the box was crushed on arrival and the mug is cracked." />
             </label>
             <div className="order-box small">
-              <strong>你的照片和视频会如何处理</strong>
+              <strong>How your photos and videos are handled</strong>
               <div className="muted" style={{ marginTop: 4 }}>
-                照片、视频和说明会由商家及 Verdict 核验系统处理，用于判断售后申请。
+                Your photos, videos and description are processed by the merchant and the Verdict verification system to assess your claim.
                 {data.processors.length > 0
-                  ? ` 以下第三方也会处理这些内容：${data.processors.join('、')}。`
-                  : ' 当前没有发送给任何第三方服务。'}
+                  ? ` These third parties also process this content: ${data.processors.join(', ')}.`
+                  : ' Nothing is currently sent to any third-party service.'}
               </div>
             </div>
             {error && (
-              <p className="notice notice-danger" style={{ marginBottom: 12 }}>
+              <p className="notice notice-danger" role="alert" style={{ marginBottom: 12 }}>
                 {error}
               </p>
             )}
             <button className="btn btn-primary btn-lg" disabled={busy} onClick={submit}>
-              {busy ? '提交中…' : '提交'}
+              {busy ? 'Submitting…' : 'Submit'}
             </button>
           </>
         )}
 
         {step === 'done' && (
           <>
-            <h1>已收到</h1>
+            <div className="done-mark" aria-hidden="true">
+              ✓
+            </div>
+            <h1>Received</h1>
             <p className="muted" style={{ marginBottom: 14 }}>
-              商家会尽快处理，你不需要再做别的。如需补充材料，商家会联系你。
+              The merchant will handle this soon. You don't need to do anything else. If more information is needed, the merchant will contact you.
             </p>
             <div className="order-box">
-              <div className="muted small">当前进度</div>
+              <div className="muted small">Current status</div>
               <strong>{data.claim.statusLabel}</strong>
             </div>
           </>
@@ -351,7 +369,7 @@ function CameraCapture({
   const startCamera = useCallback(async () => {
     setCameraError(null);
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError('这个浏览器不支持现场拍摄，或页面不是 HTTPS。可以从相册上传。');
+      setCameraError('This browser doesn\'t support live capture, or the page isn\'t on HTTPS. You can upload from your gallery.');
       return;
     }
     try {
@@ -365,7 +383,7 @@ function CameraCapture({
         await videoRef.current.play().catch(() => undefined);
       }
     } catch {
-      setCameraError('没有拿到摄像头权限，或设备没有摄像头。可以从相册上传。');
+      setCameraError('Camera permission was not granted, or the device has no camera. You can upload from your gallery.');
     }
   }, []);
 
@@ -380,7 +398,7 @@ function CameraCapture({
       const body = await res.json().catch(() => ({}));
       if (cancelled) return;
       if (!res.ok) {
-        setError(body.error ?? '无法开始拍摄');
+        setError(body.error ?? 'Can\'t start capture');
         return;
       }
       setChallenge(body);
@@ -397,7 +415,7 @@ function CameraCapture({
     const video = videoRef.current;
     if (!video || !video.videoWidth) return;
     if (isBlankFrame(video)) {
-      setError('画面几乎是纯色，可能是镜头还没准备好。请稍等一下再拍。');
+      setError('The image is almost a solid color. The camera may not be ready yet. Wait a moment and try again.');
       return;
     }
     setError(null);
@@ -418,7 +436,7 @@ function CameraCapture({
     const stream = streamRef.current;
     if (!stream || !videoRef.current?.videoWidth) return;
     if (isBlankFrame(videoRef.current)) {
-      setError('画面几乎是纯色，可能是镜头还没准备好。请稍等一下再录。');
+      setError('The image is almost a solid color. The camera may not be ready yet. Wait a moment and record again.');
       return;
     }
     setError(null);
@@ -427,7 +445,7 @@ function CameraCapture({
     try {
       recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 2_500_000 } : undefined);
     } catch {
-      setError('这个浏览器不能录视频，请改用拍照。');
+      setError('This browser can\'t record video. Take a photo instead.');
       return;
     }
     chunksRef.current = [];
@@ -471,7 +489,7 @@ function CameraCapture({
     const body = await res.json().catch(() => ({}));
     setBusy(false);
     if (!res.ok) {
-      setError(body.error ?? '上传失败，请重试');
+      setError(body.error ?? 'Upload failed. Try again.');
       return;
     }
     stopStream();
@@ -479,22 +497,22 @@ function CameraCapture({
   }
 
   return (
-    <div className="camera" role="dialog" aria-modal="true" aria-label={`拍摄：${shot.label}`}>
+    <div className="camera" role="dialog" aria-modal="true" aria-label={`Capture: ${shot.label}`}>
       <div className="camera-top">
         <div className="between">
           <strong>{shot.label}</strong>
           <button className="btn-link" style={{ color: '#fff' }} onClick={() => { stopStream(); onClose(); }}>
-            关闭
+            Close
           </button>
         </div>
         {challenge ? (
           <>
-            <div className="small" style={{ marginTop: 6, opacity: 0.85 }}>把这串字符写在纸上放进画面：</div>
+            <div className="small" style={{ marginTop: 6, opacity: 0.85 }}>Write this code on paper and keep it in the frame:</div>
             <div className="camera-code">{challenge.code}</div>
-            <div className="small">并且：{challenge.action}</div>
+            <div className="small">Also: {challenge.action}</div>
           </>
         ) : (
-          <div className="small" style={{ marginTop: 6 }}>正在准备…</div>
+          <div className="small" style={{ marginTop: 6 }}>Getting ready…</div>
         )}
       </div>
 
@@ -504,7 +522,7 @@ function CameraCapture({
           <video key="recorded" src={preview.url} poster={preview.poster} controls playsInline preload="auto" />
         ) : preview ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={preview.url} alt="拍摄预览" />
+          <img src={preview.url} alt="Capture preview" />
         ) : (
           <video key="live" ref={attachVideo} playsInline muted autoPlay />
         )}
@@ -520,38 +538,38 @@ function CameraCapture({
         {preview ? (
           <div className="row" style={{ flexWrap: 'nowrap' }}>
             <button className="btn" style={{ flex: 1 }} disabled={busy} onClick={() => setPreview(null)}>
-              {preview.kind === 'video' ? '重录' : '重拍'}
+              {preview.kind === 'video' ? 'Re-record' : 'Retake'}
             </button>
             <button className="btn btn-primary" style={{ flex: 1 }} disabled={busy} onClick={() => upload(preview.blob, true)}>
-              {busy ? (preview.kind === 'video' ? '上传并处理中…' : '上传中…') : preview.kind === 'video' ? '使用这段' : '使用这张'}
+              {busy ? (preview.kind === 'video' ? 'Uploading and processing…' : 'Uploading…') : preview.kind === 'video' ? 'Use this video' : 'Use this photo'}
             </button>
           </div>
         ) : (
           <>
             {!cameraError && canRecord && recordingMs === null && (
-              <div className="capture-modes" role="group" aria-label="拍摄方式">
+              <div className="capture-modes" role="group" aria-label="Capture mode">
                 <button aria-pressed={mode === 'photo'} onClick={() => setMode('photo')}>
-                  拍照
+                  Photo
                 </button>
                 <button aria-pressed={mode === 'video'} onClick={() => setMode('video')}>
-                  录视频
+                  Video
                 </button>
               </div>
             )}
-            {!cameraError && mode === 'photo' && <button className="shutter" aria-label="拍照" onClick={capture} disabled={!challenge} />}
+            {!cameraError && mode === 'photo' && <button className="shutter" aria-label="Take photo" onClick={capture} disabled={!challenge} />}
             {!cameraError && mode === 'video' && recordingMs === null && (
-              <button className="shutter rec" aria-label="开始录制" onClick={startRecording} disabled={!challenge} />
+              <button className="shutter rec" aria-label="Start recording" onClick={startRecording} disabled={!challenge} />
             )}
             {recordingMs !== null && (
               <>
-                <button className="shutter recording" aria-label="停止录制" onClick={stopRecording} />
+                <button className="shutter recording" aria-label="Stop recording" onClick={stopRecording} />
                 <div className="rec-time" aria-live="polite">
-                  录制中 {Math.floor(recordingMs / 1000)} / {MAX_RECORD_MS / 1000} 秒，点方块停止
+                  Recording {Math.floor(recordingMs / 1000)} / {MAX_RECORD_MS / 1000} s. Tap the square to stop
                 </div>
               </>
             )}
             <label style={{ textAlign: 'center', fontSize: 13, cursor: 'pointer', textDecoration: 'underline', opacity: 0.9 }}>
-              无法现场拍摄？从相册选择
+              Can't take it live? Choose from gallery
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"

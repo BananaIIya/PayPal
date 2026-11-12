@@ -130,7 +130,7 @@ describe('视频证据进入分析', () => {
     expect(none.evidenceIds).toEqual([v.id]);
     // 没有 LLM 时属性提取不可用，但视频已经抽帧，所以原因是模型而不是视频。
     const consistency = repo.claimRuns(claimId).find((r) => r.analyzer === 'consistency')!;
-    expect(consistency.error ?? '').not.toContain('抽帧');
+    expect(consistency.error ?? '').not.toMatch(/no extracted frames|no frames were extracted/i);
     // 页面上视频和帧的关系
     const detail = repo.claimDetail(claimId)!;
     expect(detail.evidence.find((e) => e.id === v.id)?.kind).toBe('video');
@@ -147,7 +147,7 @@ describe('视频证据进入分析', () => {
     expect(codes).not.toContain('VIDEO_DISCONTINUITY');
     const report = JSON.parse(repo.latestVerdict(claimId)!.report) as import('@/core/types').VerdictReport;
     const finding = report.findings.find((f) => f.code === 'VIDEO_EDITED')!;
-    expect(finding.normalExplanations).toContain('视频剪辑可能是为了保护隐私或压缩文件');
+    expect(finding.normalExplanations).toContain('Video edits may be for privacy or file compression');
   });
 
   it('提交给 PayPal 的附件把视频换成它的第一帧', async ({ skip }) => {
@@ -176,7 +176,7 @@ describe('视频证据进入分析', () => {
       await pipeline.runAnalysis(claimId, { latencyMs: 0 });
       const run = repo.claimRuns(claimId).find((r) => r.analyzer === 'consistency')!;
       expect(run.status).toBe('unavailable');
-      expect(run.error).toContain('没有抽帧');
+      expect(run.error).toContain('no extracted frames');
       expect(repo.latestVerdict(claimId)!.incomplete).toBe(1);
       // 只有视频、没有帧时，图片类分析器没有可看的证据。
       const synthetic = repo.claimRuns(claimId).find((r) => r.analyzer === 'synthetic');

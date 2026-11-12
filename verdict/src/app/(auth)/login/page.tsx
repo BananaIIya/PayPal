@@ -12,12 +12,12 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   if (await optionalPageUser()) redirect(safeNext(next));
   return (
     <section className="card card-pad auth-card">
-      <h1>登录控制台</h1>
+      <h1>Sign in to the console</h1>
       {userCount() === 0 ? (
         <>
-          <p style={{ marginBottom: 8 }}>还没有控制台账号。</p>
+          <p style={{ marginBottom: 8 }}>No console accounts yet.</p>
           <p className="muted small">
-            首次使用请打开服务端终端里打印的设置链接，用它创建店主账号。找不到时，在项目目录运行 <code>npm run account-link</code> 再打印一次。
+            To get started, open the setup link printed in the server terminal and create the owner account. If you cannot find it, run <code>npm run account-link</code> in the project directory to print it again.
           </p>
         </>
       ) : (
