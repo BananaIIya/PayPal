@@ -373,7 +373,7 @@ export function decide(input: EngineInput): VerdictReport {
       ),
       identityReview: level === 'high' && has('IDENTITY_MISMATCH') && hardHits.length === 0,
     }),
-    decisionNeeded: primary.type === 'none' ? 'Review manually and decide the next step' : `${primary.label}?`,
+    decisionNeeded: primary.type === 'none' ? 'Review manually and decide the next step' : primary.label,
     notices,
     primaryAction: primary,
     alternatives,
